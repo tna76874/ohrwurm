@@ -15,7 +15,13 @@ export type OpBody =
   | { type: 'agenda'; id: string; title: string; t: number; deleted?: boolean }
   | { type: 'title'; title: string }
   | { type: 'pause'; recording: boolean }
-  | { type: 'summary'; model: string; text: string };
+  | { type: 'summary'; model: string; text: string }
+  // Raumplan: „Wo bin ich?“-Einmessen per Ultraschall-Chirp
+  | { type: 'locate'; id: string; force?: boolean }
+  | { type: 'locjoin'; id: string }
+  | { type: 'locmeas'; id: string; peers: string[]; fs: number; p: number[]; q: number[] }
+  | { type: 'seat'; peer: string; x: number | null; y: number | null }
+  | { type: 'locview'; rot: number; flip: boolean };
 
 /** Ein Eintrag im Op-Log: Autor (Peer-ID), Sequenz, Lamport-Uhr, Zeit, Inhalt, Signatur. */
 export interface Op {

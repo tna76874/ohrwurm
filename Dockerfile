@@ -15,7 +15,7 @@ RUN npm ci --no-audit --no-fund --ignore-scripts
 
 FROM client-deps AS client-check
 COPY client/ ./
-RUN npm run check
+RUN npm run check && npm test
 
 FROM client-deps AS client-build
 COPY client/ ./

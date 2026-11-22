@@ -15,6 +15,7 @@ import { buildView, memberName, type SessionView } from './state';
 import { deleteSessionData, kv } from './store';
 import type { LlmSettings, MeshSession } from './types';
 import { toPdf } from './pdf';
+import { roomMap } from './roommap';
 import { confirmButton, download, downloadBlob, fill, fmtTime, h, pill, slug } from './ui';
 
 const LLM_KEY = 'ohrwurm.llm';
@@ -82,13 +83,35 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
   const panel = micPanel({ now: () => relay.now(), onSpoken: (s) => void addSpoken(s) });
   cleanups.push(() => panel.dispose());
 
+  const map = roomMap({
+    now: () => relay.now(),
+    mesh: () => mesh,
+    onAssign: (seg, peer) => void assignTo(seg, peer),
+    onPhase: () => render(),
+    lastSpeaker: () => {
+      const ls = visibleLines();
+      const last = ls[ls.length - 1];
+      return view && last && relay.now() - last.t1 < 20_000 ? speakerOf(view, last) : null;
+    },
+  });
+  cleanups.push(() => map.dispose());
+
   // ---------- Aktionen ----------
   async function addSpoken(s: Spoken) {
     if (!mesh || !view?.recording || mesh.error) return;
     await mesh.create({ type: 'seg', t0: Math.round(s.t0), t1: Math.round(s.t1), text: s.text, rms: s.rms, speaker: ms.speaker || userName() });
   }
 
+  /** Beitrag der Person zuordnen, die auf dem Raumplan angetippt wurde. */
+  async function assignTo(seg: string, peer: string) {
+    if (!mesh || !view) return;
+    const line = view.segs.find((s) => s.id === seg);
+    const name = memberName(view, peer);
+    if (line && speakerOf(view, line) !== name) await mesh.create({ type: 'speaker', seg, speaker: name });
+  }
+
   async function togglePause() {
+
     if (!mesh || !view) return;
     await mesh.create({ type: 'pause', recording: !view.recording });
   }
@@ -303,6 +326,7 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
       h(
         'div',
         { class: 'actions' },
+        h('button', { class: 'icon', title: 'Auf dem Raumplan einer Person zuordnen', onclick: () => map.startAssign({ seg: l.id, text: l.text }) }, '📍'),
         h('button', { class: 'icon', title: 'Text bearbeiten', onclick: () => editText(l, body) }, '✎'),
         h('button', { class: `icon${l.flagged ? ' on' : ''}`, title: l.flagged ? 'Markierung entfernen' : 'Zum Prüfen markieren', onclick: () => void mesh!.create({ type: 'flag', seg: l.id, flagged: !l.flagged }) }, '⚑'),
         h('button', { class: 'icon', title: l.hidden ? 'Wieder einblenden' : 'Aus dem Protokoll ausblenden', onclick: () => void mesh!.create({ type: 'hide', seg: l.id, hidden: !l.hidden }) }, l.hidden ? '↺' : '✕'),
@@ -459,7 +483,7 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
     );
     pauseBtn.textContent = v.recording ? '⏸️ Für alle pausieren' : '▶️ Weiter mitschreiben';
     pauseBtn.className = v.recording ? '' : 'primary';
-    panel.setBlocked(mesh.error ? 'Gesperrt' : v.recording ? null : `Pausiert von ${memberName(v, v.recordingBy ?? '')}`);
+    panel.setBlocked(mesh.error ? 'Gesperrt' : (map.blockReason() ?? (v.recording ? null : `Pausiert von ${memberName(v, v.recordingBy ?? '')}`)));
 
     fill(
       banner,
@@ -474,6 +498,7 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
     renderMembers();
     renderTranscript();
     renderSummaries();
+    map.update(v);
   }
 
   /** Drei Sätze, die reichen, um mitzumachen. Lässt sich wegklicken. */
@@ -568,6 +593,7 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
         'main',
         { class: 'wide' },
         banner,
+        map.banner,
         h('section', { class: 'card session-head' }, h('div', { class: 'head-main' }, titleInput, pills), h('div', { class: 'row tight' }, inviteBtn, pauseBtn)),
         invite,
         onboarding(),
@@ -584,6 +610,7 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
           h(
             'div',
             { class: 'col' },
+            map.el,
             h(
               'section',
               { class: 'card' },

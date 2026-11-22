@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
     "build": "tsc --noEmit && node scripts/copy-ort.mjs && vite build"
   },
   "dependencies": {

@@ -1,5 +1,6 @@
 // Materialisierte Sicht auf das Op-Log. Alle Geräte berechnen aus denselben Ops
 // dieselbe Sicht (Last-Writer-Wins nach Lamport-Uhr, Autor-ID als Tie-Break).
+import { buildLoc, type LocState } from './locate/model';
 import type { Mesh } from './mesh';
 import type { Identity, Op } from './types';
 
@@ -61,6 +62,7 @@ export interface SessionView {
   segs: SegView[];
   members: Member[];
   summaries: SummaryView[];
+  loc: LocState;
 }
 
 interface Reg<T> {
@@ -90,6 +92,7 @@ export function buildView(mesh: Mesh): SessionView {
   const members = new Map<string, Member>();
   const summaries: SummaryView[] = [];
   const editCount = new Map<string, number>();
+  const locOps: Op[] = [];
 
   const log = (m: Map<string, Change[]>, seg: string, c: Change) => {
     const list = m.get(seg) ?? [];
@@ -161,6 +164,13 @@ export function buildView(mesh: Mesh): SessionView {
       case 'summary':
         summaries.push({ id: `${op.a}:${op.s}`, by: op.a, at: op.t, model: str(b.model, 100), text: str(b.text, 50_000) });
         break;
+      case 'locate':
+      case 'locjoin':
+      case 'locmeas':
+      case 'seat':
+      case 'locview':
+        locOps.push(op);
+        break;
     }
   }
 
@@ -199,6 +209,7 @@ export function buildView(mesh: Mesh): SessionView {
     segs: [...segs.values()].sort((x, y) => x.t0 - y.t0),
     members: [...members.values()].sort((x, y) => Number(y.online) - Number(x.online) || x.name.localeCompare(y.name)),
     summaries: summaries.sort((x, y) => y.at - x.at),
+    loc: buildLoc(locOps, new Set(members.keys())),
   };
 }
 

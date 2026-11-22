@@ -7,6 +7,7 @@
 - **Client-Client-Mesh statt Host.** Jedes Gerät hält eine vollständige Kopie des Protokolls und gleicht sie mit allen anderen ab. Fällt ein Gerät aus, auch das, das die Sitzung gestartet hat, läuft alles weiter.
 - **Schwarmintelligenz.** Alle können Text korrigieren, Beiträge einer anderen Person zuordnen, Stellen ⚑ markieren, ausblenden und Tagesordnungspunkte setzen. Jede Änderung ist signiert und nachvollziehbar.
 - **Eigener KI-Helfer.** Jede:r kann ein lokales LLM oder einen Firmen-Endpunkt (OpenAI-kompatibel) auf das Protokoll ansetzen, um es zusammenzufassen oder Korrekturen vorschlagen zu lassen. Die Ergebnisse bleiben privat, bis man sie teilt.
+- **Raumplan per „Wo bin ich?“.** Die Geräte messen sich per fast unhörbarem Ton gegenseitig ein. Danach ordnet ein Klick auf die Person einen Beitrag zu.
 - **PDF auf Knopfdruck.** Das Protokoll wird direkt im Browser als PDF erzeugt (jsPDF), zusätzlich gibt es Markdown und das signierte Rohdaten-JSON.
 - **Für alle gemacht.** Große Knöpfe, einfache Sprache, eine Drei-Schritte-Anleitung. Die Technik steckt in aufklappbaren Bereichen.
 - **Der Server ist nur Briefträger.** Er sieht ausschließlich Chiffrat und speichert nichts.
@@ -33,6 +34,24 @@
 Beispiel-Export: [docs/beispiel-protokoll.pdf](docs/beispiel-protokoll.pdf). Er wird direkt im Browser mit jsPDF erzeugt.
 
 Die Bilder stammen aus dem automatischen Browser-Test (`make e2e-lan && make docs`) und lassen sich so jederzeit aktualisieren.
+
+## Raumplan: „Wo bin ich?“
+
+So erfährt man in großen Runden, wer wo sitzt, ohne QR-Codes auf den Tischen:
+
+1. Wer tippt, gibt eine **Stimme** ab. Sobald **4 Geräte** innerhalb von 5 Minuten getippt haben, startet das Einmessen **für alle**. Für kleine Runden gibt es „Sofort für alle starten“.
+2. Wer abgestimmt hat, ist automatisch dabei. Alle anderen sehen 15 Sekunden lang einen großen „Mitmachen“-Knopf. Das Mikrofon geht nur nach einem Tipp auf dem eigenen Gerät an.
+3. Während der Messung erscheint auf allen Bildschirmen **Wurmi**. Er kriecht zu seinem Apfel und kommt genau dann an, wenn die Messung vorbei ist („Pssst, bitte ganz leise sein …“).
+4. Jedes Gerät sendet zweimal einen 40-ms-Chirp (17,5–20,5 kHz) und nimmt dabei ungefiltert auf. Lokal sucht es mit einem Matched Filter nach den Chirps der anderen und teilt **nur die gefundenen Sample-Positionen**, nie Ton.
+5. Alle Geräte berechnen daraus deterministisch dieselbe Karte:
+   - Abstände nach dem Zwei-Wege-Verfahren („BeepBeep“). Dafür braucht es keine gemeinsame Uhr, und die Audio-Latenzen kürzen sich heraus.
+   - Die zweite Runde läuft in umgekehrter Reihenfolge. Damit lassen sich abweichende Audio-Takte je Paar exakt herausrechnen.
+   - Die Positionen entstehen per MDS-MAP und Stress-Minimierung mit Ausreißerfilter. Das Gerät, das zuerst getippt hat (meist der Bildschirm vorne), liegt oben.
+6. Bei 100 Geräten dauert die Messung etwa 45 s, weil zwei Chirp-Codes parallel senden.
+
+Auf der Karte lassen sich Plätze von allen verschieben, drehen und spiegeln. Wer nicht gemessen wurde, platziert sich von Hand. 📍 an einem Beitrag und ein Tipp auf die Person ordnen den Beitrag zu.
+
+**Grenzen:** Hohe Frequenzen aus Handy-Lautsprechern reichen typischerweise nur 5–8 m weit. Für die Gesamtkarte braucht es deshalb viele Geräte im Raum. Verdeckte Handys (Tasche, hinter dem Laptop) liefern nichts. Auf iOS muss oft noch einmal „Mitmachen“ getippt werden. Die Simulation in `client/src/locate/sim.test.ts` erreicht ca. 2 cm Abstandsfehler. Wie gut es mit echter Hardware klappt, zeigt erst ein Test im Raum.
 
 ## Schnellstart
 
