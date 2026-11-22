@@ -113,3 +113,73 @@ export async function summarize(
     signal,
   );
 }
+
+export interface Correction {
+  id: string;
+  before: string;
+  text: string;
+}
+
+function parseJsonArray(raw: string): unknown[] {
+  const start = raw.indexOf('[');
+  const end = raw.lastIndexOf(']');
+  if (start < 0 || end <= start) return [];
+  try {
+    const v = JSON.parse(raw.slice(start, end + 1)) as unknown;
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Korrekturvorschläge für Erkennungsfehler. Das Modell bekommt nummerierte Zeilen
+ * und liefert nur geänderte Zeilen zurück. Übernommen wird erst, was ein Mensch bestätigt.
+ */
+export async function correct(
+  cfg: LlmSettings,
+  lines: { id: string; speaker: string; text: string }[],
+  glossary: string,
+  onProgress: (msg: string) => void,
+  signal: AbortSignal,
+  perChunk = 40,
+): Promise<Correction[]> {
+  const out: Correction[] = [];
+  const byKey = new Map<string, { id: string; text: string }>();
+  for (let i = 0; i < lines.length; i += perChunk) {
+    const chunk = lines.slice(i, i + perChunk);
+    onProgress(`Prüfe Zeilen ${i + 1}–${i + chunk.length} von ${lines.length} …`);
+    const numbered = chunk.map((l, j) => {
+      const key = String(i + j + 1);
+      byKey.set(key, l);
+      return { nr: key, sprecher: l.speaker, text: l.text };
+    });
+    const answer = await chat(
+      cfg,
+      [
+        {
+          role: 'system',
+          content:
+            'Du korrigierst Transkripte aus automatischer Spracherkennung. Korrigiere nur offensichtliche Erkennungsfehler: ' +
+            'Rechtschreibung, Zeichensetzung, falsch verstandene Wörter, Eigennamen und Fachbegriffe. ' +
+            'Formuliere nicht um, kürze nicht, ergänze nichts, ändere nie den Sinn. ' +
+            'Antworte ausschließlich mit einem JSON-Array der Form [{"nr":"…","text":"…"}] – nur für Zeilen, die du änderst. ' +
+            'Wenn nichts zu korrigieren ist, antworte mit [].',
+        },
+        {
+          role: 'user',
+          content: `${glossary.trim() ? `Bekannte Namen und Fachbegriffe: ${glossary.trim()}\n\n` : ''}${JSON.stringify(numbered)}`,
+        },
+      ],
+      signal,
+    );
+    for (const item of parseJsonArray(answer)) {
+      const r = item as { nr?: unknown; text?: unknown };
+      const src = byKey.get(String(r.nr));
+      if (!src || typeof r.text !== 'string') continue;
+      const text = r.text.trim();
+      if (text && text !== src.text.trim()) out.push({ id: src.id, before: src.text, text });
+    }
+  }
+  return out;
+}

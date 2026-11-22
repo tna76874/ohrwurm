@@ -1,9 +1,8 @@
 import './style.css';
 import { handleCallback, idToken, isLoggedIn, loadConfig } from './auth';
 import { homeView, loginView } from './home';
-import { hostView } from './host';
-import { participantView } from './participant';
 import { Relay } from './relay';
+import { sessionView } from './session';
 import { requestPersistence } from './store';
 import { h } from './ui';
 
@@ -36,8 +35,7 @@ async function boot() {
     }
     relay.start();
     const [view, a, b] = location.hash.replace(/^#\/?/, '').split('/');
-    if (view === 'host' && a) dispose = hostView(app, relay, a);
-    else if (view === 'join' && a && b) dispose = participantView(app, relay, a, b);
+    if (view === 's' && a) dispose = sessionView(app, relay, a, b || undefined);
     else dispose = homeView(app, relay);
   };
 

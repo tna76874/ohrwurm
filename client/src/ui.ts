@@ -44,7 +44,11 @@ export function fmtDate(ms: number): string {
 }
 
 export function download(name: string, type: string, content: string) {
-  const url = URL.createObjectURL(new Blob([content], { type }));
+  downloadBlob(name, new Blob([content], { type }));
+}
+
+export function downloadBlob(name: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
   const a = h('a', { href: url, download: name });
   document.body.append(a);
   a.click();
@@ -89,6 +93,6 @@ export function confirmButton(label: string, confirmLabel: string, onConfirm: ()
   return b;
 }
 
-export function pill(text: string, kind: 'ok' | 'warn' | 'bad' | 'muted' = 'muted', title?: string) {
+export function pill(text: string, kind: 'ok' | 'warn' | 'bad' | 'muted' | 'rec' = 'muted', title?: string) {
   return h('span', { class: `pill ${kind}`, title }, text);
 }

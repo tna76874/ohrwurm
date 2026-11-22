@@ -1,10 +1,22 @@
 import { appConfig, devLogin, login } from './auth';
-import { exportPublicKey, fingerprint, generateKeyPair } from './crypto';
+import { newGroupKey, randomB64u } from './crypto';
 import { header, privacyNote } from './layout';
-import type { Relay, RelayMsg } from './relay';
-import { deleteSessionData, kv } from './store';
-import type { HostSession, PartSession } from './types';
+import { emptyState, logo } from './logo';
+import type { Relay } from './relay';
+import { deleteSessionData, kv, opStore } from './store';
+import type { MeshSession } from './types';
 import { confirmButton, fill, fmtDate, h } from './ui';
+
+function hero(sub: string) {
+  return h(
+    'section',
+    { class: 'hero' },
+    logo('logo hero-logo'),
+    h('h1', null, 'Ohrwurm'),
+    h('p', { class: 'tagline' }, 'Jedes Wort bleibt hängen.'),
+    h('p', { class: 'muted' }, sub),
+  );
+}
 
 export function loginView(app: HTMLElement, onLoggedIn: () => void, error: string | null): () => void {
   const cfg = appConfig();
@@ -20,101 +32,74 @@ export function loginView(app: HTMLElement, onLoggedIn: () => void, error: strin
     name.addEventListener('keydown', (e) => e.key === 'Enter' && go());
     body = h(
       'section',
-      { class: 'card' },
-      h('h2', null, 'Anmelden (Dev-Modus)'),
-      h('p', { class: 'warn' }, 'Der Server läuft ohne OIDC. Jeder kann jeden Namen angeben – nur für Tests.'),
-      h('div', { class: 'row' }, name, h('button', { class: 'primary', onclick: go }, 'Weiter')),
+      { class: 'card narrow' },
+      h('h2', null, 'Wie heißt du?'),
+      h('p', { class: 'small warn' }, 'Testmodus ohne Single Sign-on – jeder Name ist erlaubt.'),
+      h('div', { class: 'row' }, name, h('button', { class: 'primary', onclick: go }, 'Los geht’s')),
     );
   } else {
     body = h(
       'section',
-      { class: 'card' },
-      h('h2', null, 'Anmelden'),
-      h('p', null, 'Die Anmeldung erfolgt über den Identity Provider deiner Organisation.'),
-      h('button', { class: 'primary', onclick: () => void login(location.hash) }, `Anmelden über ${new URL(cfg.issuer!).host}`),
+      { class: 'card narrow center' },
+      h('h2', null, 'Willkommen!'),
+      h('p', null, 'Melde dich mit dem Konto deiner Organisation an.'),
+      h('button', { class: 'primary big', onclick: () => void login(location.hash) }, `Anmelden über ${new URL(cfg.issuer!).host}`),
     );
   }
   const hd = header(null);
-  fill(app, hd.el, h('main', null, err, body, privacyNote()));
+  fill(app, hd.el, h('main', null, hero('Gemeinsames Gesprächsprotokoll für Sitzungen, Konferenzen und Workshops.'), err, body, privacyNote()));
   return hd.dispose;
 }
 
 export function homeView(app: HTMLElement, relay: Relay): () => void {
   const hd = header(relay);
-  const cleanups: (() => void)[] = [hd.dispose];
   const msg = h('div');
-  const title = h('input', { type: 'text', maxlength: 120, placeholder: 'Titel, z. B. Mitgliederversammlung 2026' });
+  const title = h('input', { type: 'text', maxlength: 120, placeholder: 'Worum geht’s? z. B. Teamrunde Oktober' });
   const link = h('input', { type: 'text', placeholder: 'Einladungslink einfügen' });
   const list = h('div', { class: 'list' });
 
-  async function create() {
-    fill(msg);
-    const kp = await generateKeyPair();
-    const pub = await exportPublicKey(kp.publicKey);
-    const fp = await fingerprint(pub);
-    const off = relay.on((m: RelayMsg) => {
-      if (m.t === 'created') {
-        off();
-        const sid = String(m.session);
-        const hs: HostSession = {
-          sid,
-          title: title.value.trim() || 'Sitzung',
-          created: Date.now(),
-          keyPair: kp,
-          pub,
-          fp,
-          peers: {},
-          agenda: [],
-          recording: true,
-          hostSeq: 0,
-        };
-        void kv.set(`host:${sid}`, hs).then(() => (location.hash = `#/host/${sid}`));
-      } else if (m.t === 'error' && !m.session) {
-        off();
-        fill(msg, h('div', { class: 'card error' }, String(m.msg)));
-      }
-    });
-    cleanups.push(off);
-    if (!relay.send({ t: 'create', pub })) {
-      off();
-      fill(msg, h('div', { class: 'card error' }, 'Keine Verbindung zum Relay.'));
-    }
+  function create() {
+    const sid = randomB64u(16);
+    const key = newGroupKey();
+    const t = title.value.trim();
+    if (t) sessionStorage.setItem(`ohrwurm.newtitle.${sid}`, t);
+    location.hash = `#/s/${sid}/${key}`;
   }
 
   function join() {
     const v = link.value.trim();
-    const i = v.indexOf('#/join/');
+    const i = v.indexOf('#/s/');
     if (i < 0) {
-      fill(msg, h('div', { class: 'card error' }, 'Das ist kein gültiger Ohrwurm-Einladungslink.'));
+      fill(msg, h('div', { class: 'card error' }, 'Hm, das sieht nicht nach einem Ohrwurm-Einladungslink aus.'));
       return;
     }
     location.hash = v.slice(i);
   }
+  title.addEventListener('keydown', (e) => e.key === 'Enter' && create());
+  link.addEventListener('keydown', (e) => e.key === 'Enter' && join());
 
   async function renderList() {
-    const keys = (await kv.keys()).filter((k) => k.startsWith('host:') || k.startsWith('part:'));
+    const keys = (await kv.keys()).filter((k) => k.startsWith('mesh:'));
     const items: HTMLElement[] = [];
     for (const k of keys) {
-      const role = k.startsWith('host:') ? 'Host' : 'Teilnahme';
-      const s = await kv.get<HostSession | PartSession>(k);
+      const s = await kv.get<MeshSession>(k);
       if (!s) continue;
-      const href = role === 'Host' ? `#/host/${s.sid}` : `#/join/${s.sid}/${(s as PartSession).fp}`;
-      const when = 'created' in s ? s.created : s.joined;
+      const n = await opStore.count(s.sid);
       items.push(
         h(
           'div',
           { class: 'item' },
-          h('div', null, h('strong', null, s.title || 'Sitzung'), h('div', { class: 'small muted' }, `${role} · ${fmtDate(when)}${s.ended ? ' · beendet' : ''}`)),
+          h('div', null, h('strong', null, s.title || 'Sitzung'), h('div', { class: 'small muted' }, `${fmtDate(s.joined)} · ${n} Einträge auf diesem Gerät`)),
           h(
             'div',
-            { class: 'row' },
-            h('a', { class: 'button', href }, 'Öffnen'),
+            { class: 'row tight' },
+            h('a', { class: 'button', href: `#/s/${s.sid}` }, 'Öffnen'),
             confirmButton('Löschen', 'Wirklich löschen?', () => void deleteSessionData(s.sid).then(renderList)),
           ),
         ),
       );
     }
-    fill(list, items.length ? items : h('p', { class: 'muted' }, 'Noch keine Sitzungen auf diesem Gerät.'));
+    fill(list, items.length ? items : emptyState('Noch ganz leer hier', 'Starte eine Sitzung oder tritt per QR-Code einer bei.'));
   }
 
   fill(
@@ -123,13 +108,30 @@ export function homeView(app: HTMLElement, relay: Relay): () => void {
     h(
       'main',
       null,
+      hero('Alle im Raum transkribieren mit, alle sehen alles, alle dürfen korrigieren.'),
       msg,
-      h('section', { class: 'card' }, h('h2', null, 'Neue Sitzung leiten'), h('p', { class: 'small muted' }, 'Dieses Gerät wird Host: Es empfängt und speichert das Protokoll.'), h('div', { class: 'row' }, title, h('button', { class: 'primary', onclick: () => void create() }, 'Sitzung starten'))),
-      h('section', { class: 'card' }, h('h2', null, 'Teilnehmen'), h('p', { class: 'small muted' }, 'QR-Code scannen oder Einladungslink einfügen.'), h('div', { class: 'row' }, link, h('button', { onclick: join }, 'Beitreten'))),
-      h('section', { class: 'card' }, h('h2', null, 'Auf diesem Gerät'), list),
+      h(
+        'div',
+        { class: 'cards-2' },
+        h(
+          'section',
+          { class: 'card' },
+          h('h2', null, '✨ Neue Sitzung'),
+          h('p', { class: 'small muted' }, 'Du bekommst einen QR-Code für alle anderen. Niemand ist Chef – jedes Gerät hat das ganze Protokoll.'),
+          h('div', { class: 'row' }, title, h('button', { class: 'primary', onclick: create }, 'Starten')),
+        ),
+        h(
+          'section',
+          { class: 'card' },
+          h('h2', null, '👋 Mitmachen'),
+          h('p', { class: 'small muted' }, 'QR-Code mit der Kamera scannen – oder den Link hier einfügen.'),
+          h('div', { class: 'row' }, link, h('button', { onclick: join }, 'Beitreten')),
+        ),
+      ),
+      h('section', { class: 'card' }, h('h2', null, 'Deine Sitzungen auf diesem Gerät'), list),
       privacyNote(),
     ),
   );
   void renderList();
-  return () => cleanups.forEach((f) => f());
+  return hd.dispose;
 }

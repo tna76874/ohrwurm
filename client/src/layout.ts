@@ -1,27 +1,33 @@
 import { appConfig, logout, userName } from './auth';
+import { logo } from './logo';
 import type { Relay, RelayStatus } from './relay';
 import { fill, h, pill } from './ui';
 
 const STATUS: Record<RelayStatus, [string, 'ok' | 'warn' | 'bad' | 'muted']> = {
-  online: ['Relay verbunden', 'ok'],
+  online: ['verbunden', 'ok'],
   connecting: ['verbinde …', 'warn'],
-  offline: ['Relay getrennt', 'bad'],
+  offline: ['offline – Daten bleiben lokal', 'bad'],
   noauth: ['nicht angemeldet', 'bad'],
 };
 
+export function brand(): HTMLElement {
+  return h('a', { class: 'brand', href: '#/' }, logo(), h('span', { class: 'wordmark' }, 'Ohrwurm'));
+}
+
 export function header(relay: Relay | null): { el: HTMLElement; dispose: () => void } {
   const status = h('span');
+  const name = userName();
   const el = h(
     'header',
     { class: 'top' },
-    h('a', { class: 'brand', href: '#/' }, '🐛 Ohrwurm'),
+    brand(),
     h(
       'div',
       { class: 'top-right' },
-      appConfig().auth === 'dev' ? pill('DEV-Anmeldung', 'warn', 'Nur für Tests: keine echte Identitätsprüfung') : null,
+      appConfig().auth === 'dev' ? pill('Dev-Anmeldung', 'warn', 'Nur für Tests: keine echte Identitätsprüfung') : null,
       status,
-      userName() ? h('span', { class: 'small' }, userName()) : null,
-      userName() ? h('button', { class: 'link', onclick: () => void logout() }, 'Abmelden') : null,
+      name ? h('span', { class: 'avatar', title: name }, initials(name)) : null,
+      name ? h('button', { class: 'link', onclick: () => void logout() }, 'Abmelden') : null,
     ),
   );
   const dispose = relay
@@ -33,11 +39,24 @@ export function header(relay: Relay | null): { el: HTMLElement; dispose: () => v
   return { el, dispose };
 }
 
+export function initials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] ?? '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase() || '?';
+}
+
+/** Stabile, freundliche Farbe pro Person. */
+export function personColor(key: string): string {
+  let hsh = 0;
+  for (let i = 0; i < key.length; i++) hsh = (hsh * 31 + key.charCodeAt(i)) | 0;
+  return `hsl(${Math.abs(hsh) % 360} 55% 45%)`;
+}
+
 export function privacyNote() {
   return h(
-    'p',
-    { class: 'small muted' },
-    'Audio verlässt nie dieses Gerät. Transkripte werden Ende-zu-Ende-verschlüsselt an das Host-Gerät gesendet; ' +
-      'der Server sieht nur Chiffrat. Daten liegen lokal im Browser (IndexedDB), bis du sie exportierst oder löschst.',
+    'footer',
+    { class: 'footnote' },
+    h('strong', null, '🤫 Kein Ton verlässt dein Gerät. '),
+    'Die Spracherkennung läuft hier im Browser. Nur Text wird verschlüsselt mit den anderen Geräten der Sitzung geteilt – ' +
+      'der Server sieht ausschließlich Chiffrat. Jedes Gerät hat eine vollständige Kopie des Protokolls.',
   );
 }

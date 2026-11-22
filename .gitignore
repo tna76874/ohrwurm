@@ -11,3 +11,4 @@ certs/*
 .env
 e2e/sample.wav
 dev/dex/config.lan.yaml
+e2e/out/

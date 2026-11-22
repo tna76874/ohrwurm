@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -14,28 +12,29 @@ import (
 	"github.com/coder/websocket"
 )
 
+// Der Relay ist im Mesh-Modell nur noch ein Verteiler: Er kennt Sessions und
+// Mitglieder (Peer-ID, öffentlicher Signaturschlüssel, OIDC-Identität) und
+// leitet undurchsichtige Chiffrate weiter. Er speichert keine Inhalte und puffert
+// nichts – fehlende Daten holen sich die Clients gegenseitig.
+
 const (
 	maxFrameBytes      = 256 << 10
-	maxDataBytes       = 128 << 10
-	maxConnQueueMsgs   = 100_000
+	maxDataBytes       = 192 << 10
+	maxConnQueueMsgs   = 50_000
 	maxConnQueueBytes  = 128 << 20
-	maxHostQueueMsgs   = 50_000
-	maxHostQueueBytes  = 64 << 20
-	maxPeerQueueMsgs   = 2_000
 	maxPeersPerSession = 2_000
+	maxSessions        = 10_000
 	maxSessionsPerConn = 10
-	rateLimitPerSec    = 50
-	rateLimitBurst     = 400
+	rateLimitPerSec    = 60
+	rateLimitBurst     = 600
 )
 
 var (
-	reID  = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
+	reID  = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
 	reKey = regexp.MustCompile(`^[A-Za-z0-9_-]{16,200}$`)
 	reB64 = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 )
 
-// inMsg ist die einzige Struktur, die der Relay vom Client annimmt.
-// "data" ist immer ein undurchsichtiges base64url-Chiffrat.
 type inMsg struct {
 	T       string  `json:"t"`
 	Token   string  `json:"token,omitempty"`
@@ -59,7 +58,6 @@ type outMsg struct {
 	Session string     `json:"session,omitempty"`
 	Peer    string     `json:"peer,omitempty"`
 	Pub     string     `json:"pub,omitempty"`
-	HostPub string     `json:"hostPub,omitempty"`
 	From    string     `json:"from,omitempty"`
 	Data    string     `json:"data,omitempty"`
 	User    *Identity  `json:"user,omitempty"`
@@ -79,22 +77,26 @@ func encode(m outMsg) []byte {
 func ptr[T any](v T) *T { return &v }
 
 type session struct {
-	id             string
-	hostPub        string
-	hostSub        string
-	host           *conn
-	peers          map[string]*peer
-	hostQueue      [][]byte
-	hostQueueBytes int
-	lastActive     time.Time
+	id         string
+	peers      map[string]*peer
+	lastActive time.Time
 }
 
 type peer struct {
-	id    string
-	pub   string
-	user  Identity
-	conn  *conn
-	queue [][]byte
+	id   string
+	pub  string
+	user Identity
+	conn *conn
+}
+
+func (s *session) online() int {
+	n := 0
+	for _, p := range s.peers {
+		if p.conn != nil {
+			n++
+		}
+	}
+	return n
 }
 
 type conn struct {
@@ -102,7 +104,6 @@ type conn struct {
 	cancel context.CancelFunc
 	user   Identity
 	authed bool
-	hostOf map[string]bool   // geschützt durch Hub.mu
 	peerIn map[string]string // session -> peer, geschützt durch Hub.mu
 
 	qmu    sync.Mutex
@@ -210,7 +211,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	c := &conn{
-		ws: ws, cancel: cancel, hostOf: map[string]bool{}, peerIn: map[string]string{},
+		ws: ws, cancel: cancel, peerIn: map[string]string{},
 		wake: make(chan struct{}, 1), tokens: rateLimitBurst, last: time.Now(),
 	}
 	go c.writeLoop(ctx)
@@ -278,43 +279,15 @@ func (h *Hub) handle(c *conn, m inMsg) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch m.T {
-	case "create":
-		h.create(c, m)
-	case "host":
-		h.rehost(c, m)
 	case "join":
 		h.join(c, m)
 	case "send":
 		h.send(c, m)
 	case "leave":
 		h.leave(c, m)
-	case "end":
-		h.end(c, m)
 	default:
 		c.reply(errMsg(m.Session, "badtype", "unbekannter Nachrichtentyp"))
 	}
-}
-
-func randomID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
-}
-
-func (h *Hub) create(c *conn, m inMsg) {
-	if !reKey.MatchString(m.Pub) {
-		c.reply(errMsg("", "badkey", "ungültiger Schlüssel"))
-		return
-	}
-	if len(c.hostOf) >= maxSessionsPerConn {
-		c.reply(errMsg("", "limit", "zu viele Sessions"))
-		return
-	}
-	s := &session{id: randomID(), hostPub: m.Pub, hostSub: c.user.Sub, host: c, peers: map[string]*peer{}, lastActive: time.Now()}
-	h.sessions[s.id] = s
-	c.hostOf[s.id] = true
-	h.log.Info("Session erstellt", "session", s.id)
-	c.reply(outMsg{T: "created", Session: s.id})
 }
 
 func (s *session) peerList() []peerInfo {
@@ -325,74 +298,31 @@ func (s *session) peerList() []peerInfo {
 	return out
 }
 
-func (h *Hub) broadcastHostStatus(s *session, online bool) {
-	b := encode(outMsg{T: "hoststatus", Session: s.id, Online: ptr(online)})
+func (s *session) broadcast(except *peer, b []byte) {
 	for _, p := range s.peers {
-		if p.conn != nil {
+		if p != except && p.conn != nil {
 			p.conn.push(b)
 		}
 	}
 }
 
-func (h *Hub) rehost(c *conn, m inMsg) {
-	s := h.sessions[m.Session]
-	if s == nil {
-		c.reply(errMsg(m.Session, "nosession", "Session unbekannt oder abgelaufen"))
-		return
-	}
-	if s.hostSub != c.user.Sub {
-		c.reply(errMsg(m.Session, "forbidden", "nicht Host dieser Session"))
-		return
-	}
-	if s.host != nil && s.host != c {
-		delete(s.host.hostOf, s.id)
-		s.host.reply(errMsg(s.id, "replaced", "Host-Rolle wurde von einer anderen Verbindung übernommen"))
-	}
-	s.host = c
-	c.hostOf[s.id] = true
-	s.lastActive = time.Now()
-	c.reply(outMsg{T: "hosting", Session: s.id, Peers: s.peerList()})
-	for _, b := range s.hostQueue {
-		c.push(b)
-	}
-	s.hostQueue, s.hostQueueBytes = nil, 0
-	h.broadcastHostStatus(s, true)
-}
-
-// toHost stellt zu oder puffert, solange der Host offline ist.
-func (s *session) toHost(b []byte) bool {
-	if s.host != nil {
-		s.host.push(b)
-		return true
-	}
-	if len(s.hostQueue) >= maxHostQueueMsgs || s.hostQueueBytes+len(b) > maxHostQueueBytes {
-		return false
-	}
-	s.hostQueue = append(s.hostQueue, b)
-	s.hostQueueBytes += len(b)
-	return true
-}
-
-func (p *peer) deliver(b []byte) {
-	if p.conn != nil {
-		p.conn.push(b)
-		return
-	}
-	if len(p.queue) >= maxPeerQueueMsgs {
-		p.queue = p.queue[1:]
-	}
-	p.queue = append(p.queue, b)
-}
-
+// join tritt einer Session bei und legt sie bei Bedarf an. Die Session-ID wird
+// vom Client gewählt (128 Bit Zufall), so übersteht das Netz auch einen
+// Neustart des Relays: Wer zuerst wieder da ist, legt sie neu an.
 func (h *Hub) join(c *conn, m inMsg) {
-	s := h.sessions[m.Session]
-	if s == nil {
-		c.reply(errMsg(m.Session, "nosession", "Session unbekannt oder abgelaufen"))
+	if !reID.MatchString(m.Session) || !reID.MatchString(m.Peer) || !reKey.MatchString(m.Pub) {
+		c.reply(errMsg(m.Session, "badkey", "ungültige Session-, Peer-ID oder Schlüssel"))
 		return
 	}
-	if !reID.MatchString(m.Peer) || !reKey.MatchString(m.Pub) {
-		c.reply(errMsg(s.id, "badkey", "ungültige Peer-ID oder Schlüssel"))
-		return
+	s := h.sessions[m.Session]
+	if s == nil {
+		if len(h.sessions) >= maxSessions || len(c.peerIn) >= maxSessionsPerConn {
+			c.reply(errMsg(m.Session, "limit", "zu viele Sessions"))
+			return
+		}
+		s = &session{id: m.Session, peers: map[string]*peer{}}
+		h.sessions[s.id] = s
+		h.log.Info("Session angelegt", "session", s.id)
 	}
 	p := s.peers[m.Peer]
 	if p == nil {
@@ -403,28 +333,25 @@ func (h *Hub) join(c *conn, m inMsg) {
 		p = &peer{id: m.Peer, pub: m.Pub, user: c.user}
 		s.peers[p.id] = p
 	} else if p.pub != m.Pub || p.user.Sub != c.user.Sub {
-		c.reply(errMsg(s.id, "peertaken", "Peer-ID ist bereits vergeben"))
+		c.reply(errMsg(s.id, "peertaken", "Peer-ID ist bereits einer anderen Person zugeordnet"))
 		return
 	}
 	if p.conn != nil && p.conn != c {
 		delete(p.conn.peerIn, s.id)
-		p.conn.reply(errMsg(s.id, "replaced", "Teilnahme wurde von einer anderen Verbindung übernommen"))
+		p.conn.reply(errMsg(s.id, "replaced", "Diese Sitzung wurde in einem anderen Fenster geöffnet"))
 	}
 	p.conn = c
 	c.peerIn[s.id] = p.id
 	s.lastActive = time.Now()
-	c.reply(outMsg{T: "joined", Session: s.id, Peer: p.id, HostPub: s.hostPub, Online: ptr(s.host != nil)})
-	for _, b := range p.queue {
-		c.push(b)
-	}
-	p.queue = nil
-	s.toHost(encode(outMsg{T: "peer", Session: s.id, Peer: p.id, Pub: p.pub, User: &p.user, Online: ptr(true)}))
+	c.reply(outMsg{T: "joined", Session: s.id, Peer: p.id, Peers: s.peerList()})
+	s.broadcast(p, encode(outMsg{T: "presence", Session: s.id, Peer: p.id, Pub: p.pub, User: &p.user, Online: ptr(true)}))
 }
 
 func (h *Hub) send(c *conn, m inMsg) {
 	s := h.sessions[m.Session]
-	if s == nil {
-		c.reply(errMsg(m.Session, "nosession", "Session unbekannt oder abgelaufen"))
+	pid, ok := c.peerIn[m.Session]
+	if s == nil || !ok {
+		c.reply(errMsg(m.Session, "notmember", "nicht Teil dieser Session"))
 		return
 	}
 	if len(m.Data) == 0 || len(m.Data) > maxDataBytes || !reB64.MatchString(m.Data) {
@@ -432,34 +359,18 @@ func (h *Hub) send(c *conn, m inMsg) {
 		return
 	}
 	s.lastActive = time.Now()
-	if s.host == c {
-		b := encode(outMsg{T: "recv", Session: s.id, From: "host", Data: m.Data})
-		if m.To == "*" {
-			for _, p := range s.peers {
-				p.deliver(b)
-			}
-			return
-		}
-		p := s.peers[m.To]
-		if p == nil {
-			c.reply(errMsg(s.id, "nopeer", "Empfänger unbekannt"))
-			return
-		}
-		p.deliver(b)
+	from := s.peers[pid]
+	b := encode(outMsg{T: "recv", Session: s.id, From: pid, Data: m.Data})
+	if m.To == "*" {
+		s.broadcast(from, b)
 		return
 	}
-	pid, ok := c.peerIn[s.id]
-	if !ok {
-		c.reply(errMsg(s.id, "notmember", "nicht Teil dieser Session"))
+	to := s.peers[m.To]
+	if to == nil || to.conn == nil {
+		c.reply(errMsg(s.id, "offline", "Empfänger nicht verbunden"))
 		return
 	}
-	if m.To != "host" {
-		c.reply(errMsg(s.id, "forbidden", "Teilnehmer dürfen nur an den Host senden"))
-		return
-	}
-	if !s.toHost(encode(outMsg{T: "recv", Session: s.id, From: pid, Data: m.Data})) {
-		c.reply(errMsg(s.id, "full", "Puffer für den Host ist voll"))
-	}
+	to.conn.push(b)
 }
 
 func (h *Hub) leave(c *conn, m inMsg) {
@@ -471,47 +382,13 @@ func (h *Hub) leave(c *conn, m inMsg) {
 	delete(c.peerIn, s.id)
 	if p := s.peers[pid]; p != nil && p.conn == c {
 		p.conn = nil
-		if s.host != nil {
-			s.host.reply(outMsg{T: "peer", Session: s.id, Peer: p.id, Pub: p.pub, User: &p.user, Online: ptr(false)})
-		}
+		s.broadcast(p, encode(outMsg{T: "presence", Session: s.id, Peer: p.id, Pub: p.pub, User: &p.user, Online: ptr(false)}))
 	}
-}
-
-func (h *Hub) end(c *conn, m inMsg) {
-	s := h.sessions[m.Session]
-	if s == nil || s.host != c {
-		c.reply(errMsg(m.Session, "forbidden", "nur der verbundene Host kann die Session beenden"))
-		return
-	}
-	h.drop(s)
-	c.reply(outMsg{T: "ended", Session: s.id})
-}
-
-// drop entfernt eine Session vollständig. Aufruf nur unter h.mu.
-func (h *Hub) drop(s *session) {
-	b := encode(outMsg{T: "ended", Session: s.id})
-	for _, p := range s.peers {
-		if p.conn != nil {
-			delete(p.conn.peerIn, s.id)
-			p.conn.push(b)
-		}
-	}
-	if s.host != nil {
-		delete(s.host.hostOf, s.id)
-	}
-	delete(h.sessions, s.id)
-	h.log.Info("Session entfernt", "session", s.id)
 }
 
 func (h *Hub) disconnect(c *conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for sid := range c.hostOf {
-		if s := h.sessions[sid]; s != nil && s.host == c {
-			s.host = nil
-			h.broadcastHostStatus(s, false)
-		}
-	}
 	for sid, pid := range c.peerIn {
 		s := h.sessions[sid]
 		if s == nil {
@@ -519,14 +396,13 @@ func (h *Hub) disconnect(c *conn) {
 		}
 		if p := s.peers[pid]; p != nil && p.conn == c {
 			p.conn = nil
-			if s.host != nil {
-				s.host.reply(outMsg{T: "peer", Session: s.id, Peer: p.id, Pub: p.pub, User: &p.user, Online: ptr(false)})
-			}
+			s.lastActive = time.Now()
+			s.broadcast(p, encode(outMsg{T: "presence", Session: s.id, Peer: p.id, Pub: p.pub, User: &p.user, Online: ptr(false)}))
 		}
 	}
 }
 
-// Janitor entfernt Sessions, die länger als die TTL inaktiv waren.
+// Janitor entfernt Sessions, in denen seit der TTL niemand mehr verbunden war.
 func (h *Hub) Janitor(ctx context.Context) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
@@ -536,9 +412,10 @@ func (h *Hub) Janitor(ctx context.Context) {
 			return
 		case <-t.C:
 			h.mu.Lock()
-			for _, s := range h.sessions {
-				if time.Since(s.lastActive) > h.ttl {
-					h.drop(s)
+			for id, s := range h.sessions {
+				if s.online() == 0 && time.Since(s.lastActive) > h.ttl {
+					delete(h.sessions, id)
+					h.log.Info("Session entfernt", "session", id)
 				}
 			}
 			h.mu.Unlock()

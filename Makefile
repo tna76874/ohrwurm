@@ -21,7 +21,7 @@ GID := $(shell id -g)
 BUILD := DOCKER_BUILDKIT=1 $(DOCKER) build --build-arg NODE_IMAGE=$(NODE_IMAGE) --build-arg GO_IMAGE=$(GO_IMAGE)
 
 .DEFAULT_GOAL := help
-.PHONY: help bootstrap lock tidy check test image build dist models certs run run-oidc stop logs clean e2e run-lan stop-lan logs-lan lan-prep lan-certs e2e-lan
+.PHONY: help bootstrap lock tidy check test image build dist models certs run run-oidc stop logs clean e2e run-lan stop-lan logs-lan lan-prep lan-certs e2e-lan docs
 
 help: ## Diese Hilfe
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[1m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -78,8 +78,8 @@ run-oidc: image certs ## Starten mit Dex als OIDC-Provider → https://localhost
 	@echo "→ https://localhost:8443  (Login: anna@example.com / password)"
 
 e2e: e2e/sample.wav ## Browser-Test (Playwright) gegen laufenden Server (make run)
-	$(DOCKER) run --rm --network host --ipc host -v "$(CURDIR)/e2e:/e2e:ro" -e BASE=$(E2E_BASE) $(PLAYWRIGHT_IMAGE) \
-	  sh -c 'mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null && npm i --no-audit --no-fund --silent playwright@$(PLAYWRIGHT_VERSION) && cp /e2e/smoke.mjs . && node smoke.mjs'
+	$(DOCKER) run --rm --network host --ipc host -v "$(CURDIR)/e2e:/e2e" -e BASE=$(E2E_BASE) $(PLAYWRIGHT_IMAGE) \
+	  sh -c 'mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null && npm i --no-audit --no-fund --silent playwright@$(PLAYWRIGHT_VERSION) && cp /e2e/smoke.mjs . && node smoke.mjs; s=$$?; chown -R $(UID):$(GID) /e2e/out; exit $$s'
 
 e2e/sample.wav: ## Synthetische deutsche Sprachprobe für den E2E-Test
 	$(DOCKER) run --rm -v "$(CURDIR)/e2e:/e2e" $(TOOL_IMAGE) \
@@ -129,3 +129,9 @@ lan-certs:
 
 e2e-lan: e2e/sample.wav ## Browser-Test inkl. Dex-Login gegen den LAN-Testbetrieb (make run-lan)
 	$(MAKE) --no-print-directory e2e E2E_BASE=https://$(LAN_HOST):8443
+
+docs: ## Screenshots + Beispiel-PDF aus dem letzten E2E-Lauf nach docs/ übernehmen
+	@test -d e2e/out/docs || { echo "Erst 'make e2e' oder 'make e2e-lan' ausführen"; exit 1; }
+	mkdir -p docs/screenshots
+	cp e2e/out/docs/*.png docs/screenshots/
+	cp e2e/out/docs/beispiel-protokoll.pdf docs/

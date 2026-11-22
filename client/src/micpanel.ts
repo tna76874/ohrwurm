@@ -68,7 +68,7 @@ export function micPanel(opts: { now: () => number; onSpoken: (s: Spoken) => voi
         render();
       },
     },
-    h('option', { value: 'toggle', selected: mode === 'toggle' }, 'Antippen: an/aus'),
+    h('option', { value: 'toggle', selected: mode === 'toggle' }, 'Antippen = an/aus'),
     h('option', { value: 'hold', selected: mode === 'hold' }, 'Gedrückt halten'),
   );
 
@@ -86,7 +86,7 @@ export function micPanel(opts: { now: () => number; onSpoken: (s: Spoken) => voi
       await mic.start();
       if (stopAfterStart) await mic.stop('released');
     } catch (e) {
-      lastError = `Mikrofon nicht verfügbar: ${(e as Error).message}`;
+      lastError = `Das Mikro lässt sich nicht einschalten – bitte im Browser den Mikrofon-Zugriff erlauben. (${(e as Error).message})`;
       render();
     }
   }
@@ -123,8 +123,12 @@ export function micPanel(opts: { now: () => number; onSpoken: (s: Spoken) => voi
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKey);
 
-  mic.onState = (_s, reason) => {
-    if (reason === 'auto') lastError = 'Nach längerer Stille automatisch ausgeschaltet.';
+  mic.onState = (s, reason) => {
+    if (s === 'off') {
+      level.style.width = '0';
+      level.classList.remove('speech');
+    }
+    if (reason === 'auto') lastError = 'Nach einer Weile Stille hat sich das Mikro von selbst ausgeschaltet.';
     render();
   };
   mic.onLevel = (rms, speech) => {
@@ -139,7 +143,7 @@ export function micPanel(opts: { now: () => number; onSpoken: (s: Spoken) => voi
         if (text) opts.onSpoken({ t0: u.t0, t1: u.t1, rms: u.rms, text });
       })
       .catch((e: Error) => {
-        lastError = `Transkription fehlgeschlagen: ${e.message}`;
+        lastError = `Ein Satz konnte nicht erkannt werden. (${e.message})`;
         render();
       });
   };
@@ -153,21 +157,24 @@ export function micPanel(opts: { now: () => number; onSpoken: (s: Spoken) => voi
     button.disabled = !!blocked || noModel || !asrReady;
     button.classList.toggle('on', mic.state !== 'off');
     if (blocked) button.textContent = blocked;
-    else if (mic.state === 'on') button.textContent = mode === 'hold' ? '● Aufnahme – loslassen zum Beenden' : '● Aufnahme läuft – antippen zum Beenden';
-    else if (mic.state === 'starting') button.textContent = 'Mikrofon wird gestartet …';
-    else button.textContent = mode === 'hold' ? '🎙 Gedrückt halten zum Sprechen' : '🎙 Antippen zum Sprechen';
+    else if (mic.state === 'on') button.textContent = mode === 'hold' ? '● Ich höre zu … loslassen = fertig' : '● Ich höre zu … nochmal tippen = fertig';
+    else if (mic.state === 'starting') button.textContent = 'Einen Moment …';
+    else if (s.phase === 'loading') button.textContent = '⏳ Wird vorbereitet …';
+    else button.textContent = mode === 'hold' ? '🎙 Gedrückt halten und sprechen' : '🎙 Antippen und sprechen';
 
-    if (noModel) fill(asrStatus, h('span', { class: 'bad' }, 'Keine Modelle auf dem Server gefunden (make models).'));
-    else if (s.phase === 'loading') fill(asrStatus, `Modell wird geladen … ${Math.round((s.progress ?? 0) * 100)} %`, s.message ? ` · ${s.message}` : '');
-    else if (s.phase === 'ready') fill(asrStatus, h('span', { class: 'ok' }, `Spracherkennung bereit (${s.device?.toUpperCase()})`), s.queue ? ` · ${s.queue} in Arbeit` : '');
-    else if (s.phase === 'error') fill(asrStatus, h('span', { class: 'bad' }, `Fehler: ${s.message}`));
+    if (noModel) fill(asrStatus, h('span', { class: 'bad' }, 'Die Spracherkennung ist auf dem Server noch nicht eingerichtet (Admin: make models).'));
+    else if (s.phase === 'loading') {
+      const pct = Math.round((s.progress ?? 0) * 100);
+      fill(asrStatus, h('div', { class: 'prep' }, h('div', { class: 'prep-bar', style: `width:${pct}%` })), `Einmalige Vorbereitung der Spracherkennung … ${pct} %`, s.message ? ` · ${s.message}` : '');
+    } else if (s.phase === 'ready') fill(asrStatus, h('span', { class: 'ok', title: `${s.model} · ${s.device?.toUpperCase()}` }, '✓ Bereit zum Mitschreiben'), s.queue ? ` · schreibe mit (${s.queue}) …` : '');
+    else if (s.phase === 'error') fill(asrStatus, h('span', { class: 'bad' }, `Die Spracherkennung hat ein Problem – bitte die Seite neu laden. (${s.message})`));
     else fill(asrStatus, '');
 
     fill(
       status,
       mic.state === 'off'
-        ? 'Mikrofon ist aus. Es wird nichts aufgenommen.'
-        : 'Audio wird nur auf diesem Gerät verarbeitet und sofort verworfen. Nur der Text wird verschlüsselt gesendet.',
+        ? '🤫 Das Mikro ist aus – es wird nichts aufgenommen.'
+        : 'Der Ton bleibt auf diesem Gerät. Geteilt wird nur der erkannte Text.',
       lastError ? h('div', { class: 'warn' }, lastError) : null,
     );
   }
@@ -181,13 +188,13 @@ export function micPanel(opts: { now: () => number; onSpoken: (s: Spoken) => voi
     button,
     h('div', { class: 'level' }, level),
     status,
+    asrStatus,
     h(
       'details',
       { class: 'settings' },
-      h('summary', null, 'Einstellungen Spracherkennung'),
-      h('div', { class: 'grid' }, h('label', null, 'Modell', modelSel), h('label', null, 'Rechenweg', devSel), h('label', null, 'Sprache', langSel), h('label', null, 'Bedienung', modeSel)),
+      h('summary', null, '⚙️ Technik-Einstellungen (meist nicht nötig)'),
+      h('div', { class: 'grid' }, h('label', null, 'Knopf', modeSel), h('label', null, 'Sprache', langSel), h('label', null, 'Erkennungsmodell', modelSel), h('label', null, 'Rechnen mit', devSel)),
     ),
-    asrStatus,
   );
 
   return {

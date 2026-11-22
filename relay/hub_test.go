@@ -58,69 +58,96 @@ func (cl *client) expect(typ string) map[string]any {
 	}
 }
 
-func TestRelayFlow(t *testing.T) {
+// nothing stellt sicher, dass vor der Antwort auf einen Ping keine Nachricht des
+// Typs ankommt. (Ein Read-Timeout würde die Verbindung schließen.)
+func (cl *client) nothing(typ string) {
+	cl.t.Helper()
+	time.Sleep(100 * time.Millisecond)
+	cl.send(map[string]any{"t": "ping", "c": 1})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for {
+		_, b, err := cl.c.Read(ctx)
+		if err != nil {
+			cl.t.Fatalf("kein pong: %v", err)
+		}
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		switch m["t"] {
+		case typ:
+			cl.t.Fatalf("unerwartete Nachricht %v", m)
+		case "pong":
+			return
+		}
+	}
+}
+
+const sid = "sessionAAAAAAAAAAAAAAA"
+
+func join(cl *client, peer string) map[string]any {
+	cl.send(map[string]any{"t": "join", "session": sid, "peer": peer, "pub": strings.Repeat(peer[:1], 87)})
+	return cl.expect("joined")
+}
+
+func TestMeshRelay(t *testing.T) {
 	hub := NewHub(devVerifier{}, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	srv := httptest.NewServer(hub)
 	defer srv.Close()
 
-	hostPub := strings.Repeat("H", 87)
-	host := dial(t, srv, "Moderation")
-	host.send(map[string]any{"t": "create", "pub": hostPub})
-	sid := host.expect("created")["session"].(string)
-
 	anna := dial(t, srv, "Anna")
-	anna.send(map[string]any{"t": "join", "session": sid, "peer": "peerAnna01", "pub": strings.Repeat("A", 87)})
-	if j := anna.expect("joined"); j["hostPub"] != hostPub {
-		t.Fatalf("hostPub falsch: %v", j)
+	join(anna, "AnnaPeer00000000")
+	ben := dial(t, srv, "Ben")
+	if j := join(ben, "BenPeer000000000"); len(j["peers"].([]any)) != 2 {
+		t.Fatalf("Mitgliederliste falsch: %v", j)
 	}
-	if p := host.expect("peer"); p["peer"] != "peerAnna01" || p["user"].(map[string]any)["name"] != "Anna" {
-		t.Fatalf("peer-Event falsch: %v", p)
+	if p := anna.expect("presence"); p["peer"] != "BenPeer000000000" || p["online"] != true {
+		t.Fatalf("presence falsch: %v", p)
 	}
+	clara := dial(t, srv, "Clara")
+	join(clara, "ClaraPeer0000000")
+	anna.expect("presence")
+	ben.expect("presence")
 
-	anna.send(map[string]any{"t": "send", "session": sid, "to": "host", "data": "Y2lwaGVy"})
-	if r := host.expect("recv"); r["from"] != "peerAnna01" || r["data"] != "Y2lwaGVy" {
-		t.Fatalf("recv beim Host falsch: %v", r)
+	// Broadcast erreicht alle außer dem Absender.
+	anna.send(map[string]any{"t": "send", "session": sid, "to": "*", "data": "b3Bz"})
+	for _, c := range []*client{ben, clara} {
+		if r := c.expect("recv"); r["from"] != "AnnaPeer00000000" || r["data"] != "b3Bz" {
+			t.Fatalf("broadcast falsch: %v", r)
+		}
 	}
-	host.send(map[string]any{"t": "send", "session": sid, "to": "peerAnna01", "data": "YWNr"})
-	if r := anna.expect("recv"); r["from"] != "host" || r["data"] != "YWNr" {
-		t.Fatalf("recv beim Peer falsch: %v", r)
-	}
+	anna.nothing("recv")
 
-	// Teilnehmer dürfen nicht an andere Teilnehmer senden.
-	anna.send(map[string]any{"t": "send", "session": sid, "to": "peerOther1", "data": "eA"})
-	if e := anna.expect("error"); e["code"] != "forbidden" {
-		t.Fatalf("erwartet forbidden: %v", e)
+	// Direktnachricht nur an den Empfänger.
+	ben.send(map[string]any{"t": "send", "session": sid, "to": "ClaraPeer0000000", "data": "ZGlyZWt0"})
+	if r := clara.expect("recv"); r["from"] != "BenPeer000000000" {
+		t.Fatalf("direkt falsch: %v", r)
 	}
-	// Klartext/Nicht-base64 wird abgewiesen.
-	anna.send(map[string]any{"t": "send", "session": sid, "to": "host", "data": "Hallo Welt!"})
+	anna.nothing("recv")
+
+	// Klartext wird abgewiesen, Nicht-Mitglieder dürfen nicht senden.
+	anna.send(map[string]any{"t": "send", "session": sid, "to": "*", "data": "Hallo Welt!"})
 	if e := anna.expect("error"); e["code"] != "baddata" {
 		t.Fatalf("erwartet baddata: %v", e)
 	}
-
-	// Fremder Nutzer kann eine Peer-ID nicht übernehmen.
 	mallory := dial(t, srv, "Mallory")
-	mallory.send(map[string]any{"t": "join", "session": sid, "peer": "peerAnna01", "pub": strings.Repeat("A", 87)})
+	mallory.send(map[string]any{"t": "send", "session": sid, "to": "*", "data": "eA"})
+	if e := mallory.expect("error"); e["code"] != "notmember" {
+		t.Fatalf("erwartet notmember: %v", e)
+	}
+	// Peer-ID einer anderen Person kann nicht übernommen werden.
+	mallory.send(map[string]any{"t": "join", "session": sid, "peer": "AnnaPeer00000000", "pub": strings.Repeat("A", 87)})
 	if e := mallory.expect("error"); e["code"] != "peertaken" {
 		t.Fatalf("erwartet peertaken: %v", e)
 	}
-	// Fremder Nutzer kann nicht Host werden.
-	mallory.send(map[string]any{"t": "host", "session": sid})
-	if e := mallory.expect("error"); e["code"] != "forbidden" {
-		t.Fatalf("erwartet forbidden: %v", e)
-	}
 
-	// Host offline: Nachrichten werden gepuffert und nach Wiederverbindung zugestellt.
-	_ = host.c.Close(websocket.StatusNormalClosure, "")
-	if s := anna.expect("hoststatus"); s["online"] != false {
-		t.Fatalf("hoststatus falsch: %v", s)
+	// Offline-Meldung bei Verbindungsende.
+	_ = clara.c.Close(websocket.StatusNormalClosure, "")
+	if p := anna.expect("presence"); p["peer"] != "ClaraPeer0000000" || p["online"] != false {
+		t.Fatalf("offline-presence falsch: %v", p)
 	}
-	anna.send(map[string]any{"t": "send", "session": sid, "to": "host", "data": "cHVmZmVy"})
-	time.Sleep(50 * time.Millisecond)
-	host2 := dial(t, srv, "Moderation")
-	host2.send(map[string]any{"t": "host", "session": sid})
-	host2.expect("hosting")
-	if r := host2.expect("recv"); r["data"] != "cHVmZmVy" {
-		t.Fatalf("gepufferte Nachricht fehlt: %v", r)
+	ben.send(map[string]any{"t": "send", "session": sid, "to": "ClaraPeer0000000", "data": "eA"})
+	if e := ben.expect("error"); e["code"] != "offline" {
+		t.Fatalf("erwartet offline: %v", e)
 	}
 
 	// Binärframes (z. B. Audio) werden hart abgelehnt.
@@ -138,12 +165,15 @@ func TestRelayFlow(t *testing.T) {
 		}
 		break
 	}
+}
 
-	// Session beenden benachrichtigt Teilnehmer.
-	bob := dial(t, srv, "Bob")
-	bob.send(map[string]any{"t": "join", "session": sid, "peer": "peerBob001", "pub": strings.Repeat("B", 87)})
-	bob.expect("joined")
-	host2.send(map[string]any{"t": "end", "session": sid})
-	host2.expect("ended")
-	bob.expect("ended")
+func TestRelayRestartRecreatesSession(t *testing.T) {
+	// Ein frischer Relay kennt die Session nicht – der erste Join legt sie an.
+	hub := NewHub(devVerifier{}, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+	ben := dial(t, srv, "Ben")
+	if j := join(ben, "BenPeer000000000"); j["session"] != sid {
+		t.Fatalf("Session nicht angelegt: %v", j)
+	}
 }

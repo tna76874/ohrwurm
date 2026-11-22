@@ -1,5 +1,5 @@
 // OIDC Authorization Code Flow mit PKCE, komplett im Browser (öffentlicher Client).
-import { createRemoteJWKSet, decodeJwt, jwtVerify } from 'jose';
+import { decodeJwt } from 'jose';
 import { b64uEncode, randomB64u, sha256 } from './crypto';
 
 export interface AppConfig {
@@ -197,24 +197,3 @@ export async function logout() {
   location.assign('/');
 }
 
-let jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
-
-/**
- * Der Host prüft das ID-Token eines Teilnehmers selbst gegen den IdP und muss
- * so dem Relay die Identität nicht glauben.
- */
-export async function verifyPeerToken(token: string, expectedSub: string): Promise<boolean> {
-  if (config.auth !== 'oidc') return false;
-  try {
-    const d = await discovery();
-    jwks ??= createRemoteJWKSet(new URL(d.jwks_uri));
-    const { payload } = await jwtVerify(token, jwks, {
-      issuer: config.issuer,
-      audience: config.clientId,
-      clockTolerance: '12h',
-    });
-    return payload.sub === expectedSub;
-  } catch {
-    return false;
-  }
-}

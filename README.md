@@ -1,23 +1,38 @@
-# 🐛 Ohrwurm
+<p align="center"><img src="client/public/favicon.svg" width="96" alt="Ohrwurm-Logo"></p>
 
-Verteilte, Ende-zu-Ende-verschlüsselte Konferenz-Transkription im Browser.
+<h1 align="center">Ohrwurm</h1>
+<p align="center"><strong>Jedes Wort bleibt hängen.</strong><br>Gemeinsames Gesprächsprotokoll: Alle im Raum schreiben mit, alle sehen alles, alle dürfen korrigieren.</p>
 
-- **Audio verlässt nie das Gerät.** Whisper läuft im Browser (WebGPU oder WASM). Nur Text wird gesendet.
-- **Der Server ist nur Vermittler.** Er sieht ausschließlich Chiffrat, Peer-IDs und öffentliche Schlüssel.
-- **Symmetrische Administration.** Jedes Gerät nutzt dieselbe Web-App. Wer eine Sitzung startet, ist Host. Das Host-Gerät hält das vollständige Protokoll.
-- **Gesprächsbutton.** Das Mikrofon ist standardmäßig aus. Beim Ausschalten wird der Audio-Track beendet, die Mikrofonanzeige des Browsers erlischt.
-- **Protokoll und KI-Zusammenfassung.** Das Protokoll entsteht auf dem Host-Gerät, mit Tagesordnungspunkten und Entfernung von Doppelungen. Die Zusammenfassung erstellt ein LLM auf `localhost` oder im Firmennetz (OpenAI-kompatibel).
+- **Kein Ton verlässt das Gerät.** Whisper läuft im Browser (WebGPU oder WASM), geteilt wird nur der erkannte Text.
+- **Client-Client-Mesh statt Host.** Jedes Gerät hält eine vollständige Kopie des Protokolls und gleicht sie mit allen anderen ab. Fällt ein Gerät aus, auch das, das die Sitzung gestartet hat, läuft alles weiter.
+- **Schwarmintelligenz.** Alle können Text korrigieren, Beiträge einer anderen Person zuordnen, Stellen ⚑ markieren, ausblenden und Tagesordnungspunkte setzen. Jede Änderung ist signiert und nachvollziehbar.
+- **Eigener KI-Helfer.** Jede:r kann ein lokales LLM oder einen Firmen-Endpunkt (OpenAI-kompatibel) auf das Protokoll ansetzen, um es zusammenzufassen oder Korrekturen vorschlagen zu lassen. Die Ergebnisse bleiben privat, bis man sie teilt.
+- **PDF auf Knopfdruck.** Das Protokoll wird direkt im Browser als PDF erzeugt (jsPDF), zusätzlich gibt es Markdown und das signierte Rohdaten-JSON.
+- **Für alle gemacht.** Große Knöpfe, einfache Sprache, eine Drei-Schritte-Anleitung. Die Technik steckt in aufklappbaren Bereichen.
+- **Der Server ist nur Briefträger.** Er sieht ausschließlich Chiffrat und speichert nichts.
 
 ```
- Teilnehmer-Browser                        Relay (Go, ~1 Binary)                 Host-Browser
- ┌──────────────────────┐                 ┌──────────────────────┐            ┌─────────────────────────┐
- │ Mikro → VAD (Worklet) │                 │ OIDC-Prüfung         │            │ entschlüsseln           │
- │ → Whisper (Worker)    │  Chiffrat only  │ Sessions / Peer-IDs  │  Chiffrat  │ → IndexedDB             │
- │ → AES-GCM verschlüss. ├────────────────►│ Puffer, wenn offline ├───────────►│ → Merge / TOPs          │
- │ → Outbox (IndexedDB)  │◄────── Acks ────┤ statische Web-App    │◄── Acks ───┤ → LLM (localhost/Netz)  │
- └──────────────────────┘                 └──────────────────────┘            │ → Export (MD/JSON)      │
-                                                                               └─────────────────────────┘
+   Gerät A ─┐                                    ┌─ Gerät C
+ (Laptop)   │   verschlüsselte, signierte Ops    │  (Handy)
+            ├──────────►  Relay (Go)  ◄──────────┤
+   Gerät B ─┘   live an alle + gezielter Abgleich └─ Gerät D …
+  (Tisch)       "want/ops" von Gerät zu Gerät
+  Jedes Gerät: Mikro → Whisper → signierte Op → IndexedDB (vollständige Kopie)
 ```
+
+## So sieht’s aus
+
+| Gemeinsame Sitzung am Laptop | Auf dem Handy |
+|---|---|
+| <img src="docs/screenshots/sitzung.png" alt="Sitzung mit gemeinsamem Protokoll, Mikro und KI-Helfer" width="560"> | <img src="docs/screenshots/handy-start.png" alt="Handy: Drei-Schritte-Anleitung und großer Sprechknopf" width="200"> <img src="docs/screenshots/handy-protokoll.png" alt="Handy: korrigiertes Protokoll mit Markierung" width="200"> |
+
+| Start | Einladen per QR-Code |
+|---|---|
+| <img src="docs/screenshots/start.png" alt="Startseite" width="420"> | <img src="docs/screenshots/einladen.png" alt="Einladung mit QR-Code und Sicherheitscode" width="420"> |
+
+Beispiel-Export: [docs/beispiel-protokoll.pdf](docs/beispiel-protokoll.pdf). Er wird direkt im Browser mit jsPDF erzeugt.
+
+Die Bilder stammen aus dem automatischen Browser-Test (`make e2e-lan && make docs`) und lassen sich so jederzeit aktualisieren.
 
 ## Schnellstart
 
@@ -49,17 +64,19 @@ Caddy terminiert TLS und stellt Relay und Dex unter **einem** Origin bereit: `ht
 Ein typischer Testablauf:
 1. Am Laptop als `moderation@example.com` anmelden und eine Sitzung starten.
 2. Den QR-Code mit den Handys scannen und dort mit anderen Konten anmelden.
-3. Auf den Handys „Antippen zum Sprechen“ nutzen. Der Text erscheint am Laptop.
+3. Auf den Handys „Antippen und sprechen“ nutzen. Der Text erscheint bei allen, und alle können korrigieren.
+4. Zum Testen der Ausfallsicherheit: den Laptop schließen. Die Handys arbeiten weiter, und ein neu beitretendes Gerät bekommt alles von ihnen.
 
 Hinweise:
 - **Firewall:** Port 8443 muss im LAN erreichbar sein.
-- **Ollama auf dem Host-Laptop:** Ollama mit `OLLAMA_ORIGINS=https://<LAN_HOST>:8443` starten.
+- **Ollama auf dem eigenen Laptop:** Ollama mit `OLLAMA_ORIGINS=https://<LAN_HOST>:8443` starten.
 - **Zertifikat:** Ändert sich die LAN-IP, erzeugt `make run-lan` das Zertifikat automatisch neu.
 
 ### Automatischer Browser-Test
 
 ```sh
-make run && make e2e   # Playwright/Chromium im Container mit synthetischer Sprache als Fake-Mikrofon
+make run && make e2e      # drei Chromium-Geräte, Fake-Mikrofon, Ausfall eines Geräts, PDF-Export
+make run-lan && make e2e-lan   # dasselbe inkl. Dex-Login; Screenshots und PDF landen in e2e/out/
 ```
 
 ## Make-Ziele
@@ -75,7 +92,8 @@ make run && make e2e   # Playwright/Chromium im Container mit synthetischer Spra
 | `make certs` | Dev-Zertifikat (`SAN=…`) |
 | `make run` / `run-oidc` / `stop` / `logs` | Betrieb über `compose.yaml` |
 | `make run-lan` / `stop-lan` / `logs-lan` | LAN-Test mit Dex und Caddy (`compose.lan.yaml`) |
-| `make e2e` | Browser-Test gegen `https://localhost:8443` |
+| `make e2e` / `e2e-lan` | Browser-Test mit drei Geräten (lokal bzw. im LAN mit Dex) |
+| `make docs` | Screenshots und Beispiel-PDF aus dem letzten E2E-Lauf nach `docs/` übernehmen |
 
 Die Pipeline ist komplett im [Dockerfile](Dockerfile) definiert: `client-deps → client-check/client-build → relay-deps → relay-test/relay-build → runtime`.
 
@@ -109,45 +127,79 @@ Das Ergebnis ist **ein einziges statisches Binary**: Der gebaute Client wird per
 - `OHRWURM_OIDC_CLIENT_ID=<client-id>`
 - `OHRWURM_OIDC_SCOPES="openid profile email offline_access"`
 
-**Ollama als LLM:** Damit der Browser Ollama aufrufen darf, startest du es mit `OLLAMA_ORIGINS=https://<ohrwurm-host>`. Im Host-Gerät trägst du als Endpunkt `http://localhost:11434/v1` ein.
+**Ollama als LLM:** Damit der Browser Ollama aufrufen darf, startest du es mit `OLLAMA_ORIGINS=https://<ohrwurm-host>`. Im KI-Helfer trägst du als Adresse `http://localhost:11434/v1` ein.
+
+## Wie das Mesh funktioniert
+
+- **Op-Log.** Alles ist eine signierte Operation (Op):
+  - Beitrag
+  - Textkorrektur
+  - Sprecherzuordnung
+  - Markierung
+  - Ausblenden
+  - Tagesordnungspunkt
+  - Titel
+  - Pause
+  - geteilte Zusammenfassung
+
+  Jede Op trägt Autor, Sequenznummer und Lamport-Uhr. Alle Geräte berechnen daraus deterministisch dieselbe Ansicht. Bei gleichzeitigen Änderungen gewinnt die spätere (Last-Writer-Wins), und die Historie bleibt erhalten.
+- **Abgleich.**
+  - Neue Ops gehen live an alle.
+  - Beim (Wieder-)Beitritt sendet ein Gerät seinen Stand (`hello`). Wer mehr hat, antwortet mit seinem Stand. Fehlendes wird gezielt per `want` bei einem Gerät angefordert, das es hat, bevorzugt beim Autor selbst.
+  - Ein periodischer Abgleich und die Erkennung von Lücken fangen Verluste ab.
+- **Robustheit.**
+  - Jedes Gerät speichert die vollständige Kopie in IndexedDB.
+  - Startet der Relay neu, legt der erste wiederkehrende Client die Sitzung neu an. Die Session-ID wählen die Clients selbst, und die Geräte synchronisieren sich gegenseitig.
+  - Die Anzeige „Alles gespeichert & gesichert“ erscheint, sobald mindestens ein anderes Gerät nachweislich alles hat.
 
 ## Sicherheitsmodell
 
-1. **Schlüssel.** Der Host erzeugt beim Start ein ECDH-P-256-Schlüsselpaar. Der private Schlüssel ist nicht exportierbar und liegt in IndexedDB.
-2. **Einladung.** Der Einladungslink bzw. QR-Code enthält die Session-ID und den **Fingerprint** des Host-Schlüssels im URL-Fragment. Das Fragment wird nie an den Server gesendet. Teilnehmer prüfen den Schlüssel, den der Relay liefert, gegen diesen Fingerprint. So kann der Relay keinen eigenen Schlüssel unterschieben.
-3. **Verschlüsselung.** Teilnehmer und Host berechnen per ECDH und HKDF-SHA-256 einen gemeinsamen AES-256-GCM-Schlüssel. Die AAD bindet Session, Peer und Richtung.
-4. **Identität.** Der Relay prüft das OIDC-ID-Token. Zusätzlich schickt der Teilnehmer sein Token verschlüsselt an den Host, der es selbst gegen das JWKS des IdP prüft. In der Geräteliste erscheint das als „IdP-geprüft“.
-5. **Relay-Härtung.**
+1. **Gruppenschlüssel.**
+   - Der Einladungslink bzw. QR-Code enthält im URL-Fragment die Session-ID und einen zufälligen AES-256-GCM-Schlüssel. Das Fragment wird nie an den Server gesendet.
+   - Die App entfernt den Schlüssel nach dem Öffnen aus der Adresszeile.
+   - Alle Geräte zeigen denselben Sicherheitscode.
+   - Wer den Link hat, ist dabei. Also nur im Raum zeigen.
+2. **Signaturen.**
+   - Jedes Gerät hat ein eigenes ECDSA-P-256-Schlüsselpaar. Der private Schlüssel ist nicht exportierbar.
+   - Die Peer-ID ist der Hash des öffentlichen Schlüssels.
+   - Ops ohne gültige Signatur werden verworfen. Keiner kann Beiträge oder Korrekturen im Namen anderer erzeugen, auch nicht beim Weiterleiten durch Dritte.
+3. **Identität.**
+   - Der Relay prüft das OIDC-ID-Token und bindet die Peer-ID an die angemeldete Person.
+   - Die Geräte merken sich die erste Bestätigung je Peer und warnen bei Widersprüchen.
+   - ID-Tokens werden bewusst *nicht* an andere Geräte verteilt, weil das Bearer-Tokens wären.
+4. **Relay-Härtung.**
    - Es werden nur Text-Frames angenommen. Binärframes, also z. B. Audio, führen zum Verbindungsabbruch.
    - `data` muss base64url sein.
    - Rate-Limit und Größenlimits greifen.
-   - Teilnehmer können nur an den Host senden.
+   - Peer-IDs sind an die angemeldete Person gebunden.
    - Die CSP erlaubt Verbindungen nur zum eigenen Server, zum IdP und zu den freigegebenen LLM-Origins.
-6. **Ausfallsicherheit.** Teilnehmer halten Beiträge in einer Outbox, bis der Host den Empfang bestätigt. Ist der Host offline, puffert der Relay das Chiffrat im RAM.
 
 **Was der Relay sieht:**
-- wer wann einer Session beitritt,
+- wer wann einer Session beitritt (Name aus OIDC),
 - Zeitpunkt und Größe verschlüsselter Nachrichten.
 
-Inhalte sieht er nicht.
+Inhalte sieht er nicht, und er speichert nichts.
 
-## Grenzen (Stand MVP)
+## Grenzen
 
-- Qualität der Spracherkennung: Whisper base und small sind auf Deutsch brauchbar, aber nicht perfekt. Mit WebGPU ist `small` auf Laptops gut nutzbar, Handys schaffen eher `base`.
-- Überlappende Sprache wird nicht getrennt. Bei Tischgeräten wählt man die sprechende Person per Namensfeld.
-- Die Sessions auf dem Relay liegen nur im RAM. Ein Neustart des Relays beendet laufende Sessions, die Daten bleiben auf den Geräten.
-- Es gibt noch keinen Co-Host, keine Abstimmungen und keine Live-Ansicht des Gesamtprotokolls für Teilnehmer.
+- Qualität der Spracherkennung: Whisper base und small sind auf Deutsch brauchbar, aber nicht perfekt. Mit WebGPU ist `small` auf Laptops gut nutzbar, Handys schaffen eher `base`. Die Korrektur durch den Schwarm und die KI gleicht das aus.
+- Überlappende Sprache wird nicht getrennt. Bei Tischgeräten wählt man die sprechende Person per Namensfeld oder ordnet sie hinterher zu.
+- Textkorrekturen ersetzen den ganzen Beitrag. Bearbeiten zwei Personen gleichzeitig denselben Beitrag, gewinnt die spätere Änderung, die frühere bleibt in der Historie.
+- Der Gruppenschlüssel wird nicht rotiert. Wer einmal dabei war, kann die Sitzung weiter lesen.
+- Abstimmungen sind noch nicht umgesetzt.
 
 ## Projektstruktur
 
 ```
-relay/    Go: OIDC-Prüfung, WebSocket-Relay, statische Auslieferung (eine Abhängigkeit: coder/websocket)
+relay/    Go: OIDC-Prüfung, Zero-Knowledge-WebSocket-Verteiler, statische Auslieferung
 client/   TypeScript/Vite, ohne UI-Framework
+  src/mesh.ts         Op-Log, Signaturen, Abgleich zwischen Geräten
+  src/state.ts        Materialisierte Ansicht (LWW, Historie)
+  src/session.ts      Gemeinsame Sitzung: Mikro, Protokoll, Bearbeiten, KI-Helfer, Export
+  src/pdf.ts          PDF-Export (jsPDF)
   src/asr.worker.ts   Whisper über transformers.js
   public/worklet.js   Resampling und Sprachsegmentierung (AudioWorklet)
-  src/crypto.ts       ECDH/HKDF/AES-GCM
-  src/host.ts         Host: Empfang, Merge, TOPs, LLM, Export
-  src/participant.ts  Teilnehmer: Outbox, Acks, Zurückziehen
-dev/dex/  Test-IdP-Konfiguration
-scripts/  Modell-Download
+  src/logo.ts         Logo und Illustrationen
+dev/      Dex- und Caddy-Konfiguration für Tests
+e2e/      Playwright-Test (drei Geräte, Ausfall, PDF)
 ```

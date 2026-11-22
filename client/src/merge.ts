@@ -1,9 +1,11 @@
-// Zusammenführen der Segmente aller Geräte zu einem Protokoll.
-// Hören mehrere Geräte denselben Redner, bleibt die beste Quelle stehen.
-import type { AgendaItem, HostSession, Segment } from './types';
+// Zusammenführen: Hören mehrere Geräte denselben Satz, bleibt die beste Quelle
+// stehen, die anderen werden als Doppelung markiert. Deterministisch – alle
+// Geräte kommen zum selben Ergebnis.
+import type { Mesh } from './mesh';
+import { memberName, type AgendaView, type SegView, type SessionView } from './state';
 import { fmtDate, fmtTime } from './ui';
 
-export interface Line extends Segment {
+export interface Line extends SegView {
   dupOf?: string;
 }
 
@@ -26,30 +28,33 @@ export function similarity(a: string, b: string): number {
   return inter / (A.size + B.size - inter);
 }
 
-function overlap(a: Segment, b: Segment): number {
+function overlap(a: SegView, b: SegView): number {
   const inter = Math.min(a.t1, b.t1) - Math.max(a.t0, b.t0);
   const shorter = Math.min(a.t1 - a.t0, b.t1 - b.t0);
   return shorter > 0 ? Math.max(0, inter) / shorter : 0;
 }
 
-const score = (s: Segment) => s.rms * Math.log(2 + s.text.length);
+/** Bearbeitete Zeilen gewinnen (Menschen haben sie geprüft), sonst die lautere Quelle. */
+const score = (s: SegView) => (s.edits.length ? 1e6 : 0) + s.rms * Math.log(2 + s.text.length);
 
-export function merge(segments: Segment[]): Line[] {
-  const live = segments.filter((s) => !s.retracted && s.text.trim()).sort((a, b) => a.t0 - b.t0);
+export function merge(segs: SegView[], includeHidden = false): Line[] {
+  const live = segs.filter((s) => (includeHidden || !s.hidden) && s.text.trim());
   const out: Line[] = [];
   for (const s of live) {
     let dup: Line | undefined;
-    for (let i = out.length - 1; i >= 0; i--) {
-      const o = out[i];
-      if (o.t0 < s.t0 - 30_000) break;
-      if (o.dupOf || o.peer === s.peer) continue;
-      if (overlap(o, s) >= 0.3 && similarity(o.text, s.text) >= 0.45) {
-        dup = o;
-        break;
+    if (!s.hidden) {
+      for (let i = out.length - 1; i >= 0; i--) {
+        const o = out[i];
+        if (o.t0 < s.t0 - 30_000) break;
+        if (o.dupOf || o.hidden || o.author === s.author) continue;
+        if (overlap(o, s) >= 0.3 && similarity(o.origText, s.origText) >= 0.45) {
+          dup = o;
+          break;
+        }
       }
     }
     if (!dup) out.push({ ...s });
-    else if (score(s) > score(dup)) {
+    else if (score(s) > score(dup) || (score(s) === score(dup) && s.id < dup.id)) {
       dup.dupOf = s.id;
       out.push({ ...s });
     } else out.push({ ...s, dupOf: dup.id });
@@ -58,15 +63,15 @@ export function merge(segments: Segment[]): Line[] {
 }
 
 export interface Section {
+  id: string | null;
   title: string;
   t: number;
   lines: Line[];
 }
 
-export function sections(lines: Line[], agenda: AgendaItem[], includeDups = false): Section[] {
-  const tops = [...agenda].sort((a, b) => a.t - b.t);
-  const out: Section[] = [{ title: 'Vor dem ersten Tagesordnungspunkt', t: 0, lines: [] }];
-  tops.forEach((a, i) => out.push({ title: `TOP ${i + 1}: ${a.title}`, t: a.t, lines: [] }));
+export function sections(lines: Line[], agenda: AgendaView[], includeDups = false): Section[] {
+  const out: Section[] = [{ id: null, title: 'Vor dem ersten Tagesordnungspunkt', t: 0, lines: [] }];
+  agenda.forEach((a, i) => out.push({ id: a.id, title: `TOP ${i + 1}: ${a.title}`, t: a.t, lines: [] }));
   for (const l of lines) {
     if (l.dupOf && !includeDups) continue;
     let idx = 0;
@@ -77,54 +82,62 @@ export function sections(lines: Line[], agenda: AgendaItem[], includeDups = fals
 }
 
 /** Aufeinanderfolgende Beiträge derselben Person werden zu einem Absatz. */
-export function paragraphs(lines: Line[]): { speaker: string; t0: number; text: string }[] {
+export function paragraphs(lines: Line[], name: (l: Line) => string): { speaker: string; t0: number; text: string }[] {
   const out: { speaker: string; t0: number; t1: number; text: string }[] = [];
   for (const l of lines) {
+    const sp = name(l);
     const last = out[out.length - 1];
-    if (last && last.speaker === l.speaker && l.t0 - last.t1 < 5000) {
+    if (last && last.speaker === sp && l.t0 - last.t1 < 5000) {
       last.text += ` ${l.text}`;
       last.t1 = l.t1;
-    } else out.push({ speaker: l.speaker, t0: l.t0, t1: l.t1, text: l.text });
+    } else out.push({ speaker: sp, t0: l.t0, t1: l.t1, text: l.text });
   }
   return out;
 }
 
-export function speakerLabel(hs: HostSession, s: Segment): string {
-  return s.speaker || hs.peers[s.peer]?.label || hs.peers[s.peer]?.user.name || 'Unbekannt';
-}
+export const speakerOf = (view: SessionView, s: SegView) => s.speaker || memberName(view, s.author);
 
-export function toMarkdown(hs: HostSession, segments: Segment[]): string {
-  const lines = merge(segments).map((l) => ({ ...l, speaker: speakerLabel(hs, l) }));
-  const secs = sections(lines, hs.agenda);
-  const counts = new Map<string, number>();
-  segments.filter((s) => !s.retracted).forEach((s) => counts.set(s.peer, (counts.get(s.peer) ?? 0) + 1));
+export function toMarkdown(view: SessionView, sid: string): string {
+  const lines = merge(view.segs);
+  const secs = sections(lines, view.agenda);
+  const name = (l: Line) => speakerOf(view, l);
+  const first = view.segs[0]?.t0;
+  const edited = view.segs.filter((s) => !s.hidden && (s.edits.length || s.speakerChanges.length)).length;
   const out: string[] = [];
-  out.push(`# ${hs.title || 'Protokoll'}`, '');
-  out.push(`- Beginn: ${fmtDate(hs.created)}`);
-  out.push(`- Session: \`${hs.sid}\``);
-  out.push(`- Erstellt mit Ohrwurm. Automatische Transkription, kann Fehler enthalten.`, '');
-  out.push('## Geräte', '');
-  out.push(`- Host-Gerät – ${counts.get('host') ?? 0} Beiträge`);
-  for (const p of Object.values(hs.peers)) {
-    const v = p.verified ? 'IdP-geprüft' : 'Relay-bestätigt';
-    out.push(`- ${p.label || p.user.name} (${v}) – ${counts.get(p.peer) ?? 0} Beiträge`);
+  out.push(`# ${view.title}`, '');
+  if (first) out.push(`- Beginn: ${fmtDate(first)}`);
+  out.push(`- Sitzung: \`${sid}\``);
+  out.push(`- ${view.members.length} Geräte · ${lines.filter((l) => !l.dupOf).length} Beiträge · ${edited} gemeinsam überarbeitet`);
+  out.push('- Erstellt mit 🐛 Ohrwurm – automatische Transkription, gemeinsam korrigiert.', '');
+  out.push('## Teilnehmende Geräte', '');
+  for (const m of view.members) {
+    out.push(`- ${m.attested?.name ?? m.name}${m.attested ? '' : ' (unbestätigt)'} – ${m.segs} Beiträge, ${m.edits} Korrekturen`);
   }
   out.push('');
-  if (hs.summary) {
-    out.push(`## Zusammenfassung (KI, ${hs.summary.model}, ungeprüft)`, '', hs.summary.text.trim(), '');
+  for (const s of view.summaries.slice(0, 1)) {
+    out.push(`## Zusammenfassung (KI: ${s.model}, geteilt von ${memberName(view, s.by)})`, '', s.text.trim(), '');
   }
   out.push('## Wortprotokoll', '');
   for (const s of secs) {
     out.push(`### ${s.title}`, '');
     if (!s.lines.length) out.push('_Keine Beiträge._', '');
-    for (const p of paragraphs(s.lines)) out.push(`**${fmtTime(p.t0)} · ${p.speaker}:** ${p.text}`, '');
+    for (const p of paragraphs(s.lines, name)) out.push(`**${fmtTime(p.t0)} · ${p.speaker}:** ${p.text}`, '');
   }
   return out.join('\n');
 }
 
-export function toJSON(hs: HostSession, segments: Segment[]): string {
-  const session: Partial<HostSession> = { ...hs };
-  delete session.keyPair;
-  if (hs.llm) session.llm = { url: hs.llm.url, model: hs.llm.model }; // ohne API-Key
-  return JSON.stringify({ format: 'ohrwurm/v1', session, segments }, null, 2);
+/** Vollständiges, signiertes Op-Log – damit lässt sich alles nachvollziehen und prüfen. */
+export function toJSON(mesh: Mesh, view: SessionView): string {
+  return JSON.stringify(
+    {
+      format: 'ohrwurm/mesh-v1',
+      session: mesh.sid,
+      exported: new Date().toISOString(),
+      title: view.title,
+      members: view.members.map((m) => ({ peer: m.peer, name: m.name, attested: m.attested })),
+      ops: [...mesh.allOps()].sort((a, b) => a.l - b.l || (a.a < b.a ? -1 : 1)),
+    },
+    null,
+    2,
+  );
 }

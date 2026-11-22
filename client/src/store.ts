@@ -1,17 +1,18 @@
-// Lokale Datenhaltung in IndexedDB. Nichts davon verlässt das Gerät,
-// außer der Nutzer exportiert es aktiv.
+// Lokale Datenhaltung in IndexedDB. Jedes Gerät hält eine vollständige Kopie des
+// Op-Logs seiner Sitzungen. Nichts davon verlässt das Gerät unverschlüsselt.
+import type { Op } from './types';
 
-type StoreName = 'kv' | 'segments' | 'outbox';
+type StoreName = 'kv' | 'ops';
 let dbp: Promise<IDBDatabase> | undefined;
 
 function db(): Promise<IDBDatabase> {
   dbp ??= new Promise((resolve, reject) => {
-    const r = indexedDB.open('ohrwurm', 1);
+    const r = indexedDB.open('ohrwurm', 2);
     r.onupgradeneeded = () => {
       const d = r.result;
-      d.createObjectStore('kv');
-      d.createObjectStore('segments', { keyPath: 'id' }).createIndex('sid', 'sid');
-      d.createObjectStore('outbox', { keyPath: 'id' }).createIndex('sid', 'sid');
+      for (const old of ['segments', 'outbox']) if (d.objectStoreNames.contains(old)) d.deleteObjectStore(old);
+      if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
+      if (!d.objectStoreNames.contains('ops')) d.createObjectStore('ops', { keyPath: 'id' }).createIndex('sid', 'sid');
     };
     r.onsuccess = () => resolve(r.result);
     r.onerror = () => reject(r.error);
@@ -39,12 +40,21 @@ export const kv = {
   keys: async () => (await run<IDBValidKey[]>('kv', 'readonly', (s) => s.getAllKeys())).map(String),
 };
 
-export const rows = {
-  put: (store: 'segments' | 'outbox', value: unknown) => run<void>(store, 'readwrite', (s) => s.put(value)),
-  get: <T>(store: 'segments' | 'outbox', id: string) => run<T | undefined>(store, 'readonly', (s) => s.get(id)),
-  bySid: <T>(store: 'segments' | 'outbox', sid: string) => run<T[]>(store, 'readonly', (s) => s.index('sid').getAll(sid)),
-  clearSid: (store: 'segments' | 'outbox', sid: string) =>
-    run<void>(store, 'readwrite', (s) => {
+interface StoredOp {
+  id: string;
+  sid: string;
+  op: Op;
+}
+
+export const opStore = {
+  putMany: (sid: string, ops: Op[]) =>
+    run<void>('ops', 'readwrite', (s) => {
+      for (const op of ops) s.put({ id: `${sid}|${op.a}|${op.s}`, sid, op } satisfies StoredOp);
+    }),
+  all: async (sid: string) => (await run<StoredOp[]>('ops', 'readonly', (s) => s.index('sid').getAll(sid))).map((r) => r.op),
+  count: (sid: string) => run<number>('ops', 'readonly', (s) => s.index('sid').count(sid)),
+  clear: (sid: string) =>
+    run<void>('ops', 'readwrite', (s) => {
       const c = s.index('sid').openKeyCursor(IDBKeyRange.only(sid));
       c.onsuccess = () => {
         const cur = c.result;
@@ -57,10 +67,8 @@ export const rows = {
 };
 
 export async function deleteSessionData(sid: string) {
-  await kv.del(`host:${sid}`);
-  await kv.del(`part:${sid}`);
-  await rows.clearSid('segments', sid);
-  await rows.clearSid('outbox', sid);
+  await kv.del(`mesh:${sid}`);
+  await opStore.clear(sid);
 }
 
 /** Bittet den Browser, die Daten nicht bei Speicherdruck zu löschen. */
