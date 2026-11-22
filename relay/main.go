@@ -61,7 +61,7 @@ func loadConfig() (Config, error) {
 	}
 	c.SessionTTL = ttl
 
-	for _, o := range strings.Fields(env("OHRWURM_LLM_ORIGINS", "http://localhost:11434 http://127.0.0.1:11434")) {
+	for _, o := range strings.Fields(env("OHRWURM_LLM_ORIGINS", "http://localhost:11434 http://127.0.0.1:11434 http://localhost:1234 http://127.0.0.1:1234")) {
 		origin, err := parseOrigin(o)
 		if err != nil {
 			return c, fmt.Errorf("OHRWURM_LLM_ORIGINS: %w", err)

@@ -10,7 +10,7 @@ services:
       OHRWURM_OIDC_INTERNAL_URL: ${OHRWURM_OIDC_INTERNAL_URL:-}
       OHRWURM_OIDC_CLIENT_ID: ${OHRWURM_OIDC_CLIENT_ID:-}
       OHRWURM_OIDC_SCOPES: ${OHRWURM_OIDC_SCOPES:-openid profile email}
-      OHRWURM_LLM_ORIGINS: ${OHRWURM_LLM_ORIGINS:-http://localhost:11434 http://127.0.0.1:11434}
+      OHRWURM_LLM_ORIGINS: ${OHRWURM_LLM_ORIGINS:-http://localhost:11434 http://127.0.0.1:11434 http://localhost:1234 http://127.0.0.1:1234}
       OHRWURM_TLS_CERT: /certs/ohrwurm.crt
       OHRWURM_TLS_KEY: /certs/ohrwurm.key
       OHRWURM_MODELS_DIR: /models

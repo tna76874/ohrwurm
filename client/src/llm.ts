@@ -13,22 +13,54 @@ const SYSTEM =
   'Erfinde nichts. Nenne Personen so, wie sie im Transkript stehen. Kennzeichne Unklares ausdrücklich. ' +
   'Das Transkript stammt aus automatischer Spracherkennung und kann Hörfehler enthalten. Antworte auf Deutsch in Markdown.';
 
+/**
+ * Macht aus Eingaben wie „localhost:1234“ oder „http://localhost:11434/“ die
+ * OpenAI-kompatible Basis-URL „http://localhost:1234/v1“.
+ */
+export function normalizeBase(input: string): string {
+  let s = input.trim();
+  if (!s) return '';
+  if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
+  try {
+    const u = new URL(s);
+    const path = u.pathname.replace(/\/+$/, '');
+    return `${u.origin}${path || '/v1'}`;
+  } catch {
+    return s;
+  }
+}
+
 export function llmOriginAllowed(url: string, allowed: string[]): boolean {
   try {
-    return allowed.includes(new URL(url).origin);
+    const origin = new URL(normalizeBase(url)).origin;
+    return origin === location.origin || allowed.includes(origin);
   } catch {
     return false;
   }
 }
 
+/** fetch mit verständlicher Fehlermeldung, wenn der Browser gar nicht durchkommt. */
+async function llmFetch(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') throw e;
+    throw new Error(
+      `Keine Verbindung zu ${new URL(url).origin}. Läuft das KI-Programm (LM Studio, Ollama)? ` +
+        'Bei LM Studio im Server-Tab „Enable CORS“ einschalten, bei Ollama OLLAMA_ORIGINS setzen. ' +
+        'Fragt der Browser nach Zugriff auf lokale Geräte, bitte erlauben.',
+    );
+  }
+}
+
 async function chat(cfg: LlmSettings, messages: Msg[], signal: AbortSignal): Promise<string> {
-  const res = await fetch(`${cfg.url.replace(/\/+$/, '')}/chat/completions`, {
+  const res = await llmFetch(`${normalizeBase(cfg.url)}/chat/completions`, {
     method: 'POST',
     signal,
     headers: { 'Content-Type': 'application/json', ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}) },
     body: JSON.stringify({ model: cfg.model, messages, temperature: 0.2, stream: false }),
   });
-  if (!res.ok) throw new Error(`LLM-Endpunkt: HTTP ${res.status} ${await res.text().catch(() => '')}`.trim());
+  if (!res.ok) throw new Error(`KI-Endpunkt antwortet mit HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`.trim());
   const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
   const text = json.choices?.[0]?.message?.content;
   if (!text) throw new Error('LLM-Antwort ohne Inhalt');
@@ -50,11 +82,11 @@ function chunks(text: string, max: number): string[] {
 }
 
 export async function listModels(cfg: LlmSettings, signal?: AbortSignal): Promise<string[]> {
-  const res = await fetch(`${cfg.url.replace(/\/+$/, '')}/models`, {
+  const res = await llmFetch(`${normalizeBase(cfg.url)}/models`, {
     signal,
     headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`KI-Endpunkt antwortet mit HTTP ${res.status}`);
   const json = (await res.json()) as { data?: { id: string }[] };
   return (json.data ?? []).map((m) => m.id);
 }

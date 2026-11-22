@@ -5,7 +5,7 @@ import QRCode from 'qrcode';
 import { appConfig, userName } from './auth';
 import { exportPublicKey, generateSigningKey, importGroupKey, keyCode, peerIdFor, randomB64u } from './crypto';
 import { header, initials, personColor, privacyNote } from './layout';
-import { correct, listModels, llmOriginAllowed, summarize, type Correction } from './llm';
+import { correct, listModels, llmOriginAllowed, normalizeBase, summarize, type Correction } from './llm';
 import { emptyState, logo } from './logo';
 import { merge, paragraphs, sections, speakerOf, toJSON, toMarkdown, type Line } from './merge';
 import { Mesh } from './mesh';
@@ -62,7 +62,7 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
   const topInput = h('input', { type: 'text', maxlength: 120, placeholder: 'Nächster Tagesordnungspunkt …' });
   const transcriptEl = h('div', { class: 'transcript' });
   const summariesEl = h('div');
-  const llmUrl = h('input', { type: 'url', value: llm.url, placeholder: 'http://localhost:11434/v1' });
+  const llmUrl = h('input', { type: 'url', value: llm.url, placeholder: 'z. B. http://localhost:1234 (LM Studio) oder http://localhost:11434 (Ollama)' });
   const llmModel = h('input', { type: 'text', value: llm.model, placeholder: 'z. B. qwen3:14b', list: 'llm-models' });
   const llmModels = h('datalist', { id: 'llm-models' });
   const llmKey = h('input', { type: 'password', value: llm.apiKey ?? '', placeholder: 'optional', autocomplete: 'off' });
@@ -101,7 +101,8 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
   }
 
   function saveLlm() {
-    llm.url = llmUrl.value.trim();
+    llm.url = normalizeBase(llmUrl.value);
+    llmUrl.value = llm.url;
     llm.model = llmModel.value.trim();
     llm.apiKey = llmKey.value || undefined;
     localStorage.setItem(LLM_KEY, JSON.stringify(llm));
@@ -127,6 +128,7 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
       fill(llmStatus, h('span', { class: 'bad' }, 'Bitte Endpunkt und Modell angeben.'));
       return false;
     }
+    if (!busy && !renderAssistantStatus()) return false;
     if (busy) {
       busy.abort();
       return false;
@@ -186,6 +188,7 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
 
   async function fetchModels() {
     saveLlm();
+    if (!renderAssistantStatus()) return;
     try {
       const ids = await listModels(llm);
       fill(llmModels, ids.map((id) => h('option', { value: id })));
@@ -362,11 +365,19 @@ export function sessionView(app: HTMLElement, relay: Relay, sid: string, keyFrom
     );
   }
 
-  function renderAssistantStatus() {
+  /** true, wenn der Endpunkt laut Freigabeliste (CSP) erreichbar ist. */
+  function renderAssistantStatus(): boolean {
     const allowed = appConfig().llmOrigins;
     if (llm.url && !llmOriginAllowed(llm.url, allowed)) {
-      fill(llmStatus, h('span', { class: 'bad' }, `Dieser Endpunkt ist vom Betreiber nicht freigegeben (erlaubt: ${allowed.join(', ') || 'keine'}).`));
+      fill(
+        llmStatus,
+        h('span', { class: 'bad' }, `Diese Adresse ist auf diesem Server nicht freigegeben. Erlaubt: ${allowed.join(', ') || 'keine'}. `),
+        h('span', { class: 'muted' }, '(Admin: OHRWURM_LLM_ORIGINS ergänzen)'),
+      );
+      return false;
     }
+    if (llmStatus.querySelector('.bad')) fill(llmStatus);
+    return true;
   }
 
   function renderAssistant() {

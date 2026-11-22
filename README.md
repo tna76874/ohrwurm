@@ -118,7 +118,7 @@ Das Ergebnis ist **ein einziges statisches Binary**: Der gebaute Client wird per
 | `OHRWURM_OIDC_INTERNAL_URL` | – | optional: Adresse, unter der der Relay den IdP erreicht (z. B. im Docker-Netz) |
 | `OHRWURM_OIDC_CLIENT_ID` | – | öffentlicher Client mit PKCE, Redirect-URI `https://<host>/` |
 | `OHRWURM_OIDC_SCOPES` | `openid profile email` | bei Dex `offline_access` ergänzen, damit Refresh-Tokens ausgegeben werden |
-| `OHRWURM_LLM_ORIGINS` | `http://localhost:11434 http://127.0.0.1:11434` | Origins, die der Browser für LLM-Aufrufe nutzen darf. Wird als CSP `connect-src` erzwungen |
+| `OHRWURM_LLM_ORIGINS` | Ollama (`:11434`) und LM Studio (`:1234`) auf `localhost`/`127.0.0.1` | Origins, die der Browser für KI-Aufrufe nutzen darf. Wird als CSP `connect-src` erzwungen. Mit `make run-lan OHRWURM_LLM_ORIGINS="…"` überschreibbar |
 | `OHRWURM_MODELS_DIR` | `/models` | Verzeichnis mit `<org>/<modell>/…` |
 | `OHRWURM_SESSION_TTL` | `24h` | Sessions ohne Aktivität werden danach verworfen |
 
@@ -127,7 +127,11 @@ Das Ergebnis ist **ein einziges statisches Binary**: Der gebaute Client wird per
 - `OHRWURM_OIDC_CLIENT_ID=<client-id>`
 - `OHRWURM_OIDC_SCOPES="openid profile email offline_access"`
 
-**Ollama als LLM:** Damit der Browser Ollama aufrufen darf, startest du es mit `OLLAMA_ORIGINS=https://<ohrwurm-host>`. Im KI-Helfer trägst du als Adresse `http://localhost:11434/v1` ein.
+**Lokales KI-Modell:**
+- **LM Studio:** Im Server-Tab den Server starten und **„Enable CORS“** einschalten. Im KI-Helfer `localhost:1234` eintragen, `/v1` wird automatisch ergänzt.
+- **Ollama:** mit `OLLAMA_ORIGINS=https://<ohrwurm-host>` starten und `localhost:11434` eintragen.
+- **Chrome** fragt beim ersten Zugriff auf `localhost` ggf. nach der Berechtigung für lokale Geräte. Diese bitte erlauben.
+- **Endpunkt im Firmennetz:** Der Endpunkt muss HTTPS sprechen (sonst blockiert der Browser Mixed Content) und in `OHRWURM_LLM_ORIGINS` stehen.
 
 ## Wie das Mesh funktioniert
 

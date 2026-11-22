@@ -15,6 +15,9 @@ E2E_BASE ?= https://localhost:8443
 MODELS ?= onnx-community/whisper-base onnx-community/whisper-small
 # Hostnamen/IPs für das Dev-Zertifikat, z. B. SAN="DNS:localhost,IP:127.0.0.1,IP:192.168.1.20"
 SAN    ?= DNS:localhost,IP:127.0.0.1
+# Erlaubte KI-Endpunkte (Ollama, LM Studio), als CSP connect-src erzwungen
+OHRWURM_LLM_ORIGINS ?= http://localhost:11434 http://127.0.0.1:11434 http://localhost:1234 http://127.0.0.1:1234
+export OHRWURM_LLM_ORIGINS
 
 UID := $(shell id -u)
 GID := $(shell id -g)
