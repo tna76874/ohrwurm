@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -97,7 +98,36 @@ func parseOrigin(s string) (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 
+// healthcheck prüft den laufenden Server (für Docker-HEALTHCHECK im scratch-Image,
+// das weder Shell noch curl enthält): `ohrwurm-relay healthcheck`.
+func healthcheck() int {
+	addr := env("OHRWURM_ADDR", ":8443")
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+	scheme := "http"
+	client := &http.Client{Timeout: 3 * time.Second}
+	if os.Getenv("OHRWURM_TLS_CERT") != "" {
+		scheme = "https"
+		// Nur lokale Erreichbarkeit prüfen; das Zertifikat lautet auf den öffentlichen Namen.
+		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec
+	}
+	resp, err := client.Get(scheme + "://" + addr + "/healthz")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck())
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	cfg, err := loadConfig()
 	if err != nil {

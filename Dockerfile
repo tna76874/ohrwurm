@@ -49,4 +49,5 @@ COPY --from=relay-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=relay-build /out/ohrwurm-relay /ohrwurm-relay
 USER 65532:65532
 EXPOSE 8443
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["/ohrwurm-relay", "healthcheck"]
 ENTRYPOINT ["/ohrwurm-relay"]

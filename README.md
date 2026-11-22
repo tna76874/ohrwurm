@@ -104,7 +104,7 @@ Das Ergebnis ist **ein einziges statisches Binary**: Der gebaute Client wird per
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) nutzt dieselben Dockerfile-Stufen wie `make`:
 
 - **Pull Request:** prüfen (`client-check`, `relay-test`) und das Image bauen, ohne es zu veröffentlichen.
-- **Push auf `main`:** zusätzlich das Image nach `ghcr.io/<owner>/ohrwurm:main` pushen, für amd64 und arm64.
+- **Push auf `main`:** zusätzlich das Image nach `ghcr.io/tna76874/ohrwurm:main` und `:latest` pushen, für amd64 und arm64.
 - **Tag `v1.2.3`:** Image mit den Tags `1.2.3` und `1.2` sowie ein GitHub-Release mit den Binaries `ohrwurm-relay-linux-{amd64,arm64}` und `SHA256SUMS`.
 
 ## Konfiguration (Relay)
@@ -126,6 +126,8 @@ Das Ergebnis ist **ein einziges statisches Binary**: Der gebaute Client wird per
 - `OHRWURM_OIDC_ISSUER=https://auth.example.org/application/o/<slug>/`
 - `OHRWURM_OIDC_CLIENT_ID=<client-id>`
 - `OHRWURM_OIDC_SCOPES="openid profile email offline_access"`
+
+**Produktivbetrieb hinter Traefik mit externem IdP (Authentik, Keycloak, Entra ID):** siehe [deploy/traefik/](deploy/traefik/README.md). Dort liegen eine Compose-Datei mit allen Labels, eine `.env.example` und eine Anleitung.
 
 **Lokales KI-Modell:**
 - **LM Studio:** Im Server-Tab den Server starten und **„Enable CORS“** einschalten. Im KI-Helfer `localhost:1234` eintragen, `/v1` wird automatisch ergänzt.
@@ -204,6 +206,7 @@ client/   TypeScript/Vite, ohne UI-Framework
   src/asr.worker.ts   Whisper über transformers.js
   public/worklet.js   Resampling und Sprachsegmentierung (AudioWorklet)
   src/logo.ts         Logo und Illustrationen
+deploy/   Produktionsbeispiel: Traefik + externer IdP
 dev/      Dex- und Caddy-Konfiguration für Tests
 e2e/      Playwright-Test (drei Geräte, Ausfall, PDF)
 ```

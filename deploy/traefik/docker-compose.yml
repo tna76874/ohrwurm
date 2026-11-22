@@ -1,0 +1,130 @@
+# Ohrwurm hinter Traefik (v3) mit externem OpenID-Connect-Provider
+# (z. B. Authentik, Keycloak, Entra ID).
+#
+#   cp .env.example .env && $EDITOR .env
+#   docker network create traefik              # einmalig, falls noch nicht vorhanden
+#   docker compose --profile setup run --rm models   # Whisper-Modelle laden (einmalig)
+#   docker compose up -d
+#
+# Läuft bereits ein Traefik? Dann nur den Dienst „ohrwurm“ nutzen und
+# TRAEFIK_NETWORK / TRAEFIK_ENTRYPOINT* / TRAEFIK_CERTRESOLVER passend setzen.
+# Ohne vorhandenen Traefik: zusätzlich `--profile traefik` verwenden.
+
+name: ohrwurm
+
+services:
+  ohrwurm:
+    image: ${OHRWURM_IMAGE:-ghcr.io/tna76874/ohrwurm:latest}
+    restart: unless-stopped
+    environment:
+      # TLS terminiert Traefik – Ohrwurm spricht intern einfaches HTTP.
+      OHRWURM_ADDR: ":8080"
+      OHRWURM_AUTH: oidc
+      OHRWURM_OIDC_ISSUER: ${OIDC_ISSUER:?OIDC_ISSUER fehlt}
+      OHRWURM_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?OIDC_CLIENT_ID fehlt}
+      OHRWURM_OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email offline_access}
+      # Nur nötig, wenn der Server den IdP unter einer anderen Adresse erreicht als die Browser.
+      OHRWURM_OIDC_INTERNAL_URL: ${OIDC_INTERNAL_URL:-}
+      # Erlaubte KI-Endpunkte (CSP connect-src). Firmen-Endpunkte müssen HTTPS sprechen.
+      OHRWURM_LLM_ORIGINS: ${LLM_ORIGINS:-http://localhost:11434 http://127.0.0.1:11434 http://localhost:1234 http://127.0.0.1:1234}
+      OHRWURM_MODELS_DIR: /models
+      OHRWURM_SESSION_TTL: ${SESSION_TTL:-24h}
+    volumes:
+      - models:/models:ro
+    networks:
+      - traefik
+    # Härtung: statisches Binary, kein Schreibzugriff, keine Rechte nötig.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
+
+      # HTTPS-Router
+      traefik.http.routers.ohrwurm.rule: Host(`${OHRWURM_HOST:?OHRWURM_HOST fehlt}`)
+      traefik.http.routers.ohrwurm.entrypoints: ${TRAEFIK_ENTRYPOINT_HTTPS:-websecure}
+      traefik.http.routers.ohrwurm.tls: "true"
+      traefik.http.routers.ohrwurm.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      traefik.http.routers.ohrwurm.middlewares: ohrwurm-hsts,ohrwurm-compress
+      traefik.http.routers.ohrwurm.service: ohrwurm
+
+      # HTTP → HTTPS
+      traefik.http.routers.ohrwurm-http.rule: Host(`${OHRWURM_HOST}`)
+      traefik.http.routers.ohrwurm-http.entrypoints: ${TRAEFIK_ENTRYPOINT_HTTP:-web}
+      traefik.http.routers.ohrwurm-http.middlewares: ohrwurm-redirect
+      traefik.http.routers.ohrwurm-http.service: ohrwurm
+      traefik.http.middlewares.ohrwurm-redirect.redirectscheme.scheme: https
+      traefik.http.middlewares.ohrwurm-redirect.redirectscheme.permanent: "true"
+
+      # Sicherheits-Header: CSP, COOP/COEP & Co. setzt Ohrwurm selbst (dynamisch,
+      # inkl. IdP und KI-Endpunkten) – Traefik ergänzt nur HSTS.
+      traefik.http.middlewares.ohrwurm-hsts.headers.stsSeconds: "31536000"
+      traefik.http.middlewares.ohrwurm-hsts.headers.stsIncludeSubdomains: "true"
+      traefik.http.middlewares.ohrwurm-hsts.headers.stsPreload: "false"
+
+      # Kompression für App und Texte; die ONNX-Modelle sind bereits binär dicht.
+      traefik.http.middlewares.ohrwurm-compress.compress.excludedcontenttypes: application/octet-stream
+
+      # Backend (WebSockets funktionieren ohne weitere Einstellungen)
+      traefik.http.services.ohrwurm.loadbalancer.server.port: "8080"
+      traefik.http.services.ohrwurm.loadbalancer.server.scheme: http
+      traefik.http.services.ohrwurm.loadbalancer.passhostheader: "true"
+      traefik.http.services.ohrwurm.loadbalancer.healthcheck.path: /healthz
+      traefik.http.services.ohrwurm.loadbalancer.healthcheck.interval: 15s
+      traefik.http.services.ohrwurm.loadbalancer.healthcheck.timeout: 3s
+
+  # Einmalig: Whisper-Modelle in das Volume laden.
+  #   docker compose --profile setup run --rm models
+  models:
+    profiles: [setup]
+    image: alpine:3.20
+    volumes:
+      - models:/models
+      - ../../scripts/fetch-models.sh:/fetch-models.sh:ro
+    command: >-
+      sh -c 'apk add --no-cache curl >/dev/null &&
+             sh /fetch-models.sh ${WHISPER_MODELS:-onnx-community/whisper-base onnx-community/whisper-small}'
+
+  # Optional: eigener Traefik, falls noch keiner läuft (`--profile traefik`).
+  traefik:
+    profiles: [traefik]
+    image: traefik:v3.2
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=${TRAEFIK_NETWORK:-traefik}
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.http3=true
+      # WebSockets halten: Ohrwurm pingt alle 30 s, das reicht für das Standard-Idle-Timeout.
+      - --entrypoints.websecure.transport.respondingtimeouts.idletimeout=180s
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@example.org}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      - --log.level=INFO
+      - --accesslog=false
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt:/letsencrypt
+    networks:
+      - traefik
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  models:
+  letsencrypt:
+
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}
