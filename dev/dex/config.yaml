@@ -1,0 +1,37 @@
+# Dex als Test-IdP für die lokale Entwicklung. NICHT für den Produktivbetrieb.
+# Login: anna@example.com / password  ·  ben@example.com / password
+issuer: http://localhost:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+  allowedOrigins:
+    - https://localhost:8443
+
+oauth2:
+  skipApprovalScreen: true
+
+expiry:
+  idTokens: 1h
+
+staticClients:
+  - id: ohrwurm
+    name: Ohrwurm
+    public: true
+    redirectURIs:
+      - https://localhost:8443/
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: anna@example.com
+    username: Anna Muster
+    userID: 6f6a4c1e-0000-4000-8000-00000000a001
+    # bcrypt("password")
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+  - email: ben@example.com
+    username: Ben Beispiel
+    userID: 6f6a4c1e-0000-4000-8000-00000000b002
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"

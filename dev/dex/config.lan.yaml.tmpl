@@ -1,0 +1,35 @@
+# Dex für Tests im lokalen Netz (make run-lan). __LAN_HOST__ wird vom Makefile ersetzt.
+# Alle Dummy-Konten haben das Passwort: password
+issuer: https://__LAN_HOST__:8443/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+expiry:
+  idTokens: 1h
+
+staticClients:
+  - id: ohrwurm
+    name: Ohrwurm
+    public: true
+    redirectURIs:
+      - https://__LAN_HOST__:8443/
+
+enablePasswordDB: true
+
+# bcrypt("password")
+staticPasswords:
+  - { email: moderation@example.com, username: Moderation, userID: 00000000-0000-4000-8000-000000000001, hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W" }
+  - { email: anna@example.com,  username: Anna Muster,    userID: 00000000-0000-4000-8000-000000000002, hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W" }
+  - { email: ben@example.com,   username: Ben Beispiel,   userID: 00000000-0000-4000-8000-000000000003, hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W" }
+  - { email: clara@example.com, username: Clara Test,     userID: 00000000-0000-4000-8000-000000000004, hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W" }
+  - { email: david@example.com, username: David Probe,    userID: 00000000-0000-4000-8000-000000000005, hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W" }
+  - { email: emma@example.com,  username: Emma Muster,    userID: 00000000-0000-4000-8000-000000000006, hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W" }
+  - { email: tisch1@example.com, username: Tisch 1,       userID: 00000000-0000-4000-8000-000000000011, hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W" }
+  - { email: tisch2@example.com, username: Tisch 2,       userID: 00000000-0000-4000-8000-000000000012, hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W" }

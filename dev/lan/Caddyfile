@@ -1,0 +1,18 @@
+# TLS-Frontend für Tests im lokalen Netz: Relay und Dex unter einem Origin,
+# damit Handys nur ein Zertifikat akzeptieren müssen.
+{
+	auto_https disable_redirects
+	admin off
+	# Bei Aufruf über eine IP senden Clients kein SNI → Standard-Zertifikat wählen
+	default_sni {$LAN_HOST}
+}
+
+https://{$LAN_HOST}:8443, https://localhost:8443 {
+	tls /certs/lan.crt /certs/lan.key
+	handle /dex/* {
+		reverse_proxy dex:5556
+	}
+	handle {
+		reverse_proxy ohrwurm:8080
+	}
+}

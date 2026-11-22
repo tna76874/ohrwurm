@@ -1,0 +1,38 @@
+# Testbetrieb im lokalen Netz mit Dex (make run-lan).
+# Caddy terminiert TLS und vereint Relay und Dex unter https://<LAN_HOST>:8443.
+name: ohrwurm-lan
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      LAN_HOST: ${LAN_HOST:?LAN_HOST fehlt}
+    volumes:
+      - ./dev/lan/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+    depends_on: [ohrwurm, dex]
+
+  ohrwurm:
+    image: ${IMAGE:-ohrwurm}:${VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      OHRWURM_ADDR: ":8080"
+      OHRWURM_AUTH: oidc
+      OHRWURM_OIDC_ISSUER: https://${LAN_HOST}:8443/dex
+      OHRWURM_OIDC_INTERNAL_URL: http://dex:5556/dex
+      OHRWURM_OIDC_CLIENT_ID: ohrwurm
+      OHRWURM_OIDC_SCOPES: openid profile email offline_access
+      OHRWURM_LLM_ORIGINS: ${OHRWURM_LLM_ORIGINS:-http://localhost:11434 http://127.0.0.1:11434}
+      OHRWURM_MODELS_DIR: /models
+    volumes:
+      - ./models:/models:ro
+
+  dex:
+    image: ghcr.io/dexidp/dex:v2.41.1
+    restart: unless-stopped
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./dev/dex/config.lan.yaml:/etc/dex/config.yaml:ro

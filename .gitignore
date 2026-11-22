@@ -1,0 +1,13 @@
+node_modules/
+client/dist/
+client/public/ort/
+relay/web/*
+!relay/web/.gitkeep
+dist/
+models/*
+!models/.gitkeep
+certs/*
+!certs/.gitkeep
+.env
+e2e/sample.wav
+dev/dex/config.lan.yaml

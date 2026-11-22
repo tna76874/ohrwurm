@@ -1,0 +1,29 @@
+services:
+  ohrwurm:
+    image: ${IMAGE:-ohrwurm}:${VERSION:-dev}
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      OHRWURM_AUTH: ${OHRWURM_AUTH:-dev}
+      OHRWURM_OIDC_ISSUER: ${OHRWURM_OIDC_ISSUER:-}
+      OHRWURM_OIDC_INTERNAL_URL: ${OHRWURM_OIDC_INTERNAL_URL:-}
+      OHRWURM_OIDC_CLIENT_ID: ${OHRWURM_OIDC_CLIENT_ID:-}
+      OHRWURM_OIDC_SCOPES: ${OHRWURM_OIDC_SCOPES:-openid profile email}
+      OHRWURM_LLM_ORIGINS: ${OHRWURM_LLM_ORIGINS:-http://localhost:11434 http://127.0.0.1:11434}
+      OHRWURM_TLS_CERT: /certs/ohrwurm.crt
+      OHRWURM_TLS_KEY: /certs/ohrwurm.key
+      OHRWURM_MODELS_DIR: /models
+    volumes:
+      - ./models:/models:ro
+      - ./certs:/certs:ro
+
+  # Test-IdP für die Entwicklung (make run-oidc)
+  dex:
+    profiles: [oidc]
+    image: ghcr.io/dexidp/dex:v2.41.1
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports:
+      - "5556:5556"
+    volumes:
+      - ./dev/dex/config.yaml:/etc/dex/config.yaml:ro
