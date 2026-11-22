@@ -3,8 +3,7 @@
 #
 #   cp .env.example .env && $EDITOR .env
 #   docker network create traefik              # einmalig, falls noch nicht vorhanden
-#   docker compose --profile setup run --rm models   # Whisper-Modelle laden (einmalig)
-#   docker compose up -d
+#   docker compose up -d                       # lädt beim ersten Start die Whisper-Modelle (~1 GB) nach ./models
 #
 # Läuft bereits ein Traefik? Dann nur den Dienst „ohrwurm“ nutzen und
 # TRAEFIK_NETWORK / TRAEFIK_ENTRYPOINT* / TRAEFIK_CERTRESOLVER passend setzen.
@@ -30,7 +29,10 @@ services:
       OHRWURM_MODELS_DIR: /models
       OHRWURM_SESSION_TTL: ${SESSION_TTL:-24h}
     volumes:
-      - models:/models:ro
+      - ./models:/models:ro
+    depends_on:
+      models:
+        condition: service_completed_successfully
     networks:
       - traefik
     # Härtung: statisches Binary, kein Schreibzugriff, keine Rechte nötig.
@@ -78,17 +80,41 @@ services:
       traefik.http.services.ohrwurm.loadbalancer.healthcheck.interval: 15s
       traefik.http.services.ohrwurm.loadbalancer.healthcheck.timeout: 3s
 
-  # Einmalig: Whisper-Modelle in das Volume laden.
-  #   docker compose --profile setup run --rm models
+  # Lädt fehlende Whisper-Modelle nach ./models und beendet sich dann.
+  # Vorhandene Dateien werden übersprungen – spätere Starts dauern Sekunden.
+  # Eigenständig (kein Repo nötig). Ohne Internet: Modelle mit `make models`
+  # vorab laden und nach ./models kopieren.
   models:
-    profiles: [setup]
     image: alpine:3.20
+    restart: "no"
+    environment:
+      WHISPER_MODELS: ${WHISPER_MODELS:-onnx-community/whisper-base onnx-community/whisper-small}
+      HF_BASE: ${HF_BASE:-https://huggingface.co}
     volumes:
-      - models:/models
-      - ../../scripts/fetch-models.sh:/fetch-models.sh:ro
-    command: >-
-      sh -c 'apk add --no-cache curl >/dev/null &&
-             sh /fetch-models.sh ${WHISPER_MODELS:-onnx-community/whisper-base onnx-community/whisper-small}'
+      - ./models:/models
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        REQ="config.json generation_config.json preprocessor_config.json tokenizer.json tokenizer_config.json onnx/encoder_model_quantized.onnx onnx/decoder_model_merged_quantized.onnx"
+        OPT="onnx/encoder_model.onnx onnx/decoder_model_merged_q4.onnx"
+        need=0
+        for r in $$WHISPER_MODELS; do for f in $$REQ; do [ -s "/models/$$r/$$f" ] || need=1; done; done
+        if [ "$$need" = 0 ]; then echo "Whisper-Modelle vollständig vorhanden."; exit 0; fi
+        apk add --no-cache curl >/dev/null
+        get() {
+          d="/models/$$1/$$2"
+          [ -s "$$d" ] && return 0
+          mkdir -p "$$(dirname "$$d")"
+          echo "lade $$1/$$2"
+          if curl -fsSL --retry 3 -o "$$d.part" "$$HF_BASE/$$1/resolve/main/$$2"; then mv "$$d.part" "$$d"
+          else rm -f "$$d.part"; [ "$$3" = optional ] || { echo "FEHLER: $$1/$$2" >&2; exit 1; }; fi
+        }
+        for r in $$WHISPER_MODELS; do
+          for f in $$REQ; do get "$$r" "$$f"; done
+          for f in $$OPT; do get "$$r" "$$f" optional; done
+        done
+        chmod -R a+rX /models
+        echo "Whisper-Modelle bereit."
 
   # Optional: eigener Traefik, falls noch keiner läuft (`--profile traefik`).
   traefik:
@@ -121,7 +147,6 @@ services:
     security_opt: [no-new-privileges:true]
 
 volumes:
-  models:
   letsencrypt:
 
 networks:

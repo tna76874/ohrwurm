@@ -162,6 +162,12 @@ func main() {
 	}()
 
 	log.Info("Ohrwurm-Relay startet", "version", version, "addr", cfg.Addr, "tls", cfg.TLSCert != "", "auth", cfg.AuthMode, "llmOrigins", cfg.LLMOrigins)
+	if m := listModels(cfg.ModelsDir); len(m) == 0 {
+		log.Warn("Keine Whisper-Modelle gefunden – die Spracherkennung ist nicht nutzbar", "dir", cfg.ModelsDir,
+			"erwartet", cfg.ModelsDir+"/<org>/<modell>/config.json, z. B. onnx-community/whisper-base")
+	} else {
+		log.Info("Whisper-Modelle gefunden", "models", m)
+	}
 	if cfg.TLSCert != "" {
 		err = srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
 	} else {

@@ -12,3 +12,5 @@ certs/*
 e2e/sample.wav
 dev/dex/config.lan.yaml
 e2e/out/
+deploy/traefik/models/
+deploy/traefik/.env
